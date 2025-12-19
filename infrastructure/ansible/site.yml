@@ -1,0 +1,460 @@
+# Bisect Bot - Main Ansible Playbook
+# ===================================
+#
+# This is the single command to deploy the entire application.
+#
+# Usage:
+#   cd infrastructure/ansible
+#   ansible-playbook site.yml
+
+---
+- name: Deploy Bisect Bot to Hetzner
+  hosts: bisect_bot
+  become: true
+
+  vars_files:
+    - group_vars/all.yml
+    - group_vars/vault.yml
+
+  vars:
+    app_name: bisect-bot
+    app_path: /opt/bisect-bot
+    app_user: deploy
+    git_repo: "https://github.com/your-org/bisect-bot.git"
+    git_branch: main
+
+  handlers:
+    - name: Restart Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+
+    - name: Restart fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: restarted
+
+  tasks:
+    # =========================================================================
+    # SYSTEM SETUP
+    # =========================================================================
+    - name: Wait for cloud-init to complete
+      ansible.builtin.wait_for:
+        path: /var/lib/cloud/instance/boot-finished
+        timeout: 300
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install system packages
+      ansible.builtin.apt:
+        name:
+          - curl
+          - git
+          - htop
+          - unzip
+          - vim
+          - ufw
+          - fail2ban
+          - postgresql-client
+          - python3-pip
+          - python3-docker
+        state: present
+
+    # =========================================================================
+    # DOCKER
+    # =========================================================================
+    - name: Check if Docker is installed
+      ansible.builtin.command: docker --version
+      register: docker_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Docker
+      when: docker_check.rc != 0
+      block:
+        - name: Download Docker install script
+          ansible.builtin.get_url:
+            url: https://get.docker.com
+            dest: /tmp/get-docker.sh
+            mode: "0755"
+
+        - name: Run Docker install script
+          ansible.builtin.command: /tmp/get-docker.sh
+          args:
+            creates: /usr/bin/docker
+
+    - name: Ensure Docker is running
+      ansible.builtin.systemd:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add deploy user to docker group
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        groups: docker
+        append: true
+
+    - name: Configure Docker daemon
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "log-driver": "json-file",
+            "log-opts": {
+              "max-size": "100m",
+              "max-file": "3"
+            },
+            "storage-driver": "overlay2",
+            "live-restore": true
+          }
+        mode: "0644"
+      notify: Restart Docker
+
+    # =========================================================================
+    # SECURITY
+    # =========================================================================
+    - name: Configure UFW defaults
+      community.general.ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: incoming, policy: deny }
+        - { direction: outgoing, policy: allow }
+
+    - name: Allow SSH, HTTP, HTTPS through UFW
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["22", "80", "443"]
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+    - name: Configure fail2ban
+      ansible.builtin.copy:
+        dest: /etc/fail2ban/jail.local
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 5
+
+          [sshd]
+          enabled = true
+          port = ssh
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 5
+        mode: "0644"
+      notify: Restart fail2ban
+
+    - name: Enable fail2ban
+      ansible.builtin.systemd:
+        name: fail2ban
+        state: started
+        enabled: true
+
+    # =========================================================================
+    # APPLICATION SETUP
+    # =========================================================================
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_path }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Create secrets directory
+      ansible.builtin.file:
+        path: "{{ app_path }}/secrets"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0700"
+
+    - name: Clone application repository
+      ansible.builtin.git:
+        repo: "{{ git_repo }}"
+        dest: "{{ app_path }}"
+        version: "{{ git_branch }}"
+        force: true
+      become_user: "{{ app_user }}"
+
+    - name: Create .env file
+      ansible.builtin.copy:
+        dest: "{{ app_path }}/.env"
+        content: |
+          # Auto-generated by Ansible
+          BASE_URL={{ vault_base_url }}
+          DATABASE_URL={{ vault_database_url }}
+          DATABASE_URL_DIRECT={{ vault_database_url_direct | default(vault_database_url) }}
+          GITHUB_APP_ID={{ vault_github_app_id }}
+          GITHUB_APP_SLUG={{ vault_github_app_slug }}
+          GITHUB_CLIENT_ID={{ vault_github_client_id }}
+          GITHUB_CLIENT_SECRET={{ vault_github_client_secret }}
+          GITHUB_WEBHOOK_SECRET={{ vault_github_webhook_secret }}
+          GITHUB_PRIVATE_KEY_PATH=/app/secrets/private-key.pem
+          SECRET_KEY={{ vault_secret_key }}
+          ENCRYPTION_KEY={{ vault_encryption_key }}
+          BISECT_TIMEOUT_SECONDS={{ bisect_timeout_seconds | default(1800) }}
+          DOCKER_RUNNER_IMAGE=bisect-runner:latest
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+
+    - name: Write GitHub private key
+      ansible.builtin.copy:
+        content: "{{ vault_github_private_key }}"
+        dest: "{{ app_path }}/secrets/private-key.pem"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+
+    - name: Create Caddyfile
+      ansible.builtin.copy:
+        dest: "{{ app_path }}/Caddyfile"
+        content: |
+          {
+              email {{ vault_admin_email }}
+          }
+
+          {{ vault_domain }} {
+              handle /webhook {
+                  reverse_proxy bot:8000
+              }
+
+              handle /health {
+                  reverse_proxy bot:8000
+              }
+
+              handle /queue/* {
+                  reverse_proxy bot:8000
+              }
+
+              handle /job/* {
+                  reverse_proxy bot:8000
+              }
+
+              handle {
+                  reverse_proxy web:8000
+              }
+
+              header {
+                  X-Content-Type-Options nosniff
+                  X-Frame-Options DENY
+                  Referrer-Policy strict-origin-when-cross-origin
+                  -Server
+              }
+
+              encode gzip
+          }
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+
+    - name: Create docker-compose.prod.yml
+      ansible.builtin.copy:
+        dest: "{{ app_path }}/docker-compose.prod.yml"
+        content: |
+          version: "3.8"
+
+          services:
+            caddy:
+              image: caddy:2-alpine
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./Caddyfile:/etc/caddy/Caddyfile:ro
+                - caddy_data:/data
+                - caddy_config:/config
+              depends_on:
+                - bot
+              networks:
+                - frontend
+              restart: unless-stopped
+
+            bot:
+              build: .
+              environment:
+                - DATABASE_URL=${DATABASE_URL}
+                - GITHUB_APP_ID=${GITHUB_APP_ID}
+                - GITHUB_PRIVATE_KEY_PATH=/app/secrets/private-key.pem
+                - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+                - DOCKER_RUNNER_IMAGE=bisect-runner:latest
+                - MAX_CONCURRENT_JOBS=4
+                - BISECT_TIMEOUT_SECONDS=${BISECT_TIMEOUT_SECONDS}
+                - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+              volumes:
+                - ./secrets:/app/secrets:ro
+                - /var/run/docker.sock:/var/run/docker.sock:ro
+              depends_on:
+                runner-build:
+                  condition: service_completed_successfully
+              networks:
+                - frontend
+                - backend
+              restart: unless-stopped
+
+            runner-build:
+              image: docker:24-cli
+              volumes:
+                - /var/run/docker.sock:/var/run/docker.sock:ro
+                - ./docker:/build:ro
+              command: docker build -t bisect-runner:latest -f /build/Dockerfile.runner /build
+              restart: "no"
+
+          networks:
+            frontend:
+            backend:
+              internal: true
+
+          volumes:
+            caddy_data:
+            caddy_config:
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0644"
+
+    # =========================================================================
+    # BUILD & DEPLOY
+    # =========================================================================
+    - name: Build Docker images
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.prod.yml build
+        chdir: "{{ app_path }}"
+      become_user: "{{ app_user }}"
+
+    - name: Start services
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.prod.yml up -d
+        chdir: "{{ app_path }}"
+      become_user: "{{ app_user }}"
+
+    - name: Wait for services to be ready
+      ansible.builtin.pause:
+        seconds: 30
+
+    - name: Run database migrations
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.prod.yml exec -T bot alembic upgrade head
+        chdir: "{{ app_path }}"
+      become_user: "{{ app_user }}"
+      register: migration_result
+      ignore_errors: true
+
+    - name: Scale bot instances
+      ansible.builtin.command:
+        cmd: docker compose -f docker-compose.prod.yml up -d --scale bot={{ bot_replicas | default(2) }}
+        chdir: "{{ app_path }}"
+      become_user: "{{ app_user }}"
+
+    # =========================================================================
+    # AUTOMATION SCRIPTS
+    # =========================================================================
+    - name: Create scripts directory
+      ansible.builtin.file:
+        path: "{{ app_path }}/scripts"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Create auto-scale script
+      ansible.builtin.copy:
+        dest: "{{ app_path }}/scripts/autoscale.sh"
+        content: |
+          #!/bin/bash
+          # Auto-scaling based on pending jobs in PostgreSQL (Supabase)
+          cd {{ app_path }}
+          source .env
+          MIN={{ autoscale_min_instances | default(2) }}
+          MAX={{ autoscale_max_instances | default(10) }}
+          # Query pending jobs from PostgreSQL
+          PENDING=$(docker compose -f docker-compose.prod.yml exec -T bot python -c "
+          from app.database import SessionLocal
+          from app.models import BisectJob, JobStatus
+          db = SessionLocal()
+          count = db.query(BisectJob).filter(BisectJob.status == JobStatus.PENDING).count()
+          print(count)
+          " 2>/dev/null | tr -d '\r' || echo 0)
+          CURRENT=$(docker compose -f docker-compose.prod.yml ps bot 2>/dev/null | grep -c Up || echo $MIN)
+          DESIRED=$((PENDING / 5 + 1))
+          [ $DESIRED -lt $MIN ] && DESIRED=$MIN
+          [ $DESIRED -gt $MAX ] && DESIRED=$MAX
+          [ $DESIRED -ne $CURRENT ] && docker compose -f docker-compose.prod.yml up -d --scale bot=$DESIRED
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Create backup script
+      ansible.builtin.copy:
+        dest: "{{ app_path }}/scripts/backup.sh"
+        content: |
+          #!/bin/bash
+          cd {{ app_path }}
+          source .env
+          BACKUP_DIR="{{ app_path }}/backups"
+          mkdir -p "$BACKUP_DIR"
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          pg_dump "${DATABASE_URL_DIRECT:-$DATABASE_URL}" | gzip > "$BACKUP_DIR/backup_${TIMESTAMP}.sql.gz"
+          find "$BACKUP_DIR" -name "*.sql.gz" -mtime +7 -delete
+          echo "Backup saved: $BACKUP_DIR/backup_${TIMESTAMP}.sql.gz"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Set up auto-scale cron job
+      ansible.builtin.cron:
+        name: "Bisect Bot autoscale"
+        minute: "*/5"
+        job: "{{ app_path }}/scripts/autoscale.sh >> /var/log/bisect-autoscale.log 2>&1"
+        user: "{{ app_user }}"
+
+    - name: Set up backup cron job
+      ansible.builtin.cron:
+        name: "Bisect Bot backup"
+        minute: "0"
+        hour: "2"
+        job: "{{ app_path }}/scripts/backup.sh >> /var/log/bisect-backup.log 2>&1"
+        user: "{{ app_user }}"
+
+    # =========================================================================
+    # VERIFY DEPLOYMENT
+    # =========================================================================
+    - name: Wait for health check
+      ansible.builtin.uri:
+        url: "http://localhost:8000/health"
+        return_content: true
+      register: health_check
+      retries: 10
+      delay: 10
+      until: health_check.status == 200
+
+    - name: Deployment complete
+      ansible.builtin.debug:
+        msg: |
+          ✅ DEPLOYMENT SUCCESSFUL!
+
+          🌐 URL: https://{{ vault_domain }}
+          🔧 Server: {{ ansible_host }}
+          💚 Health: {{ health_check.json }}
+
+          📋 Useful commands:
+            SSH:    ssh deploy@{{ ansible_host }}
+            Logs:   docker compose -f docker-compose.prod.yml logs -f
+            Status: docker compose -f docker-compose.prod.yml ps
+            Scale:  docker compose -f docker-compose.prod.yml up -d --scale bot=5
+
+          📄 Next steps:
+            1. Update GitHub App webhook URL to: https://{{ vault_domain }}/webhook
+            2. Install the app on a test repository
+            3. Try: /bisect <good_sha> <bad_sha> <test_command>
+

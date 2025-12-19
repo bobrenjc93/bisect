@@ -1,0 +1,132 @@
+# Backup Role - Configure automated backups
+# This role sets up automated database backups.
+
+---
+- name: Create backup directory
+  ansible.builtin.file:
+    path: "{{ backup_path }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0750"
+
+- name: Install PostgreSQL client for backups
+  ansible.builtin.apt:
+    name: postgresql-client
+    state: present
+
+- name: Create backup script
+  ansible.builtin.template:
+    src: backup.sh.j2
+    dest: "{{ app_path }}/scripts/backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0750"
+
+- name: Create scripts directory
+  ansible.builtin.file:
+    path: "{{ app_path }}/scripts"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0755"
+
+- name: Create backup script
+  ansible.builtin.copy:
+    dest: "{{ app_path }}/scripts/backup.sh"
+    content: |
+      #!/bin/bash
+      set -e
+
+      BACKUP_DIR="{{ backup_path }}"
+      TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+      BACKUP_FILE="${BACKUP_DIR}/bisect_${TIMESTAMP}.sql.gz"
+
+      # Source environment variables
+      set -a
+      source {{ app_path }}/.env
+      set +a
+
+      # Use direct connection for pg_dump (not pooled)
+      DIRECT_URL="${DATABASE_URL_DIRECT:-$DATABASE_URL}"
+
+      mkdir -p "$BACKUP_DIR"
+      pg_dump "$DIRECT_URL" | gzip > "$BACKUP_FILE"
+
+      # Keep only last {{ backup_retention_days }} days
+      find "$BACKUP_DIR" -name "*.sql.gz" -mtime +{{ backup_retention_days }} -delete
+
+      echo "Backup created: $BACKUP_FILE"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0750"
+
+- name: Create backup cron job
+  ansible.builtin.cron:
+    name: "Bisect Bot database backup"
+    minute: "{{ backup_cron_minute }}"
+    hour: "{{ backup_cron_hour }}"
+    job: "{{ app_path }}/scripts/backup.sh >> /var/log/bisect-backup.log 2>&1"
+    user: "{{ app_user }}"
+  when: backup_enabled | default(true)
+
+- name: Create restore script
+  ansible.builtin.copy:
+    dest: "{{ app_path }}/scripts/restore.sh"
+    content: |
+      #!/bin/bash
+      set -e
+
+      if [ -z "$1" ]; then
+        echo "Usage: $0 <backup_file>"
+        echo "Available backups:"
+        ls -la {{ backup_path }}/*.sql.gz
+        exit 1
+      fi
+
+      BACKUP_FILE="$1"
+
+      if [ ! -f "$BACKUP_FILE" ]; then
+        echo "Error: Backup file not found: $BACKUP_FILE"
+        exit 1
+      fi
+
+      echo "⚠️  WARNING: This will overwrite the current database!"
+      read -p "Are you sure? (yes/no): " confirm
+      if [ "$confirm" != "yes" ]; then
+        echo "Aborted."
+        exit 1
+      fi
+
+      # Source environment variables
+      set -a
+      source {{ app_path }}/.env
+      set +a
+
+      # Use direct connection for restore
+      DIRECT_URL="${DATABASE_URL_DIRECT:-$DATABASE_URL}"
+
+      echo "Restoring from: $BACKUP_FILE"
+      gunzip -c "$BACKUP_FILE" | psql "$DIRECT_URL"
+
+      echo "✅ Restore complete!"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0750"
+
+- name: Display backup info
+  ansible.builtin.debug:
+    msg: |
+      📦 Backup Configuration
+      
+      Path: {{ backup_path }}
+      Schedule: {{ backup_cron_hour }}:{{ backup_cron_minute }} daily
+      Retention: {{ backup_retention_days }} days
+      
+      Manual commands:
+        Backup: {{ app_path }}/scripts/backup.sh
+        Restore: {{ app_path }}/scripts/restore.sh <backup_file>
+
+
+
+

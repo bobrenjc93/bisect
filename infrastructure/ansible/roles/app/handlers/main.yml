@@ -1,0 +1,20 @@
+# App Role Handlers
+
+---
+- name: Restart application
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_path }}"
+    files:
+      - "{{ docker_compose_file }}"
+    state: present
+    recreate: always
+
+- name: Restart Caddy
+  ansible.builtin.command:
+    cmd: docker compose -f {{ docker_compose_file }} exec caddy caddy reload --config /etc/caddy/Caddyfile
+    chdir: "{{ app_path }}"
+  ignore_errors: true
+
+
+
+

@@ -1,0 +1,6 @@
+# This directory contains the auto-generated hosts file from Terraform.
+# The hosts file is created by: terraform apply -var-file=../secrets.yml
+
+
+
+

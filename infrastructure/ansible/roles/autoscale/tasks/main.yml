@@ -1,0 +1,114 @@
+# Autoscale Role - Configure worker auto-scaling
+# This role sets up automatic worker scaling based on queue depth.
+
+---
+- name: Create scripts directory
+  ansible.builtin.file:
+    path: "{{ app_path }}/scripts"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0755"
+
+- name: Create auto-scale script
+  ansible.builtin.copy:
+    dest: "{{ app_path }}/scripts/autoscale.sh"
+    content: |
+      #!/bin/bash
+      set -e
+
+      cd {{ app_path }}
+
+      # Source environment variables
+      set -a
+      source .env
+      set +a
+
+      MIN_WORKERS={{ autoscale_min_workers }}
+      MAX_WORKERS={{ autoscale_max_workers }}
+      JOBS_PER_WORKER={{ autoscale_jobs_per_worker }}
+
+      # Get queue length from Redis
+      QUEUE_LENGTH=$(docker compose -f {{ docker_compose_file }} exec -T redis redis-cli -a "$REDIS_PASSWORD" LLEN bisect_jobs 2>/dev/null | tr -d '\r' || echo 0)
+
+      # Get current worker count
+      CURRENT_WORKERS=$(docker compose -f {{ docker_compose_file }} ps worker 2>/dev/null | grep -c "Up" || echo $MIN_WORKERS)
+
+      # Calculate desired workers
+      DESIRED=$((QUEUE_LENGTH / JOBS_PER_WORKER + 1))
+      DESIRED=$((DESIRED < MIN_WORKERS ? MIN_WORKERS : DESIRED))
+      DESIRED=$((DESIRED > MAX_WORKERS ? MAX_WORKERS : DESIRED))
+
+      if [ $DESIRED -ne $CURRENT_WORKERS ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') Scaling from $CURRENT_WORKERS to $DESIRED workers (queue: $QUEUE_LENGTH)"
+        docker compose -f {{ docker_compose_file }} up -d --scale worker=$DESIRED --no-recreate
+      fi
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0750"
+
+- name: Create autoscale cron job
+  ansible.builtin.cron:
+    name: "Bisect Bot autoscale"
+    minute: "{{ autoscale_cron_interval }}"
+    job: "{{ app_path }}/scripts/autoscale.sh >> /var/log/bisect-autoscale.log 2>&1"
+    user: "{{ app_user }}"
+  when: autoscale_enabled | default(true)
+
+# -----------------------------------------------------------------------------
+# Time-based Scaling (Optional)
+# -----------------------------------------------------------------------------
+- name: Configure time-based scaling cron jobs
+  when: time_scaling_enabled | default(false)
+  block:
+    - name: Scale up during work hours
+      ansible.builtin.cron:
+        name: "Bisect Bot workday scale-up"
+        minute: "0"
+        hour: "{{ time_scaling_workday_start }}"
+        weekday: "1-5"
+        job: "cd {{ app_path }} && docker compose -f {{ docker_compose_file }} up -d --scale worker={{ time_scaling_workday_workers }} >> /var/log/bisect-scale.log 2>&1"
+        user: "{{ app_user }}"
+
+    - name: Scale down after hours
+      ansible.builtin.cron:
+        name: "Bisect Bot off-hours scale-down"
+        minute: "0"
+        hour: "{{ time_scaling_workday_end }}"
+        weekday: "1-5"
+        job: "cd {{ app_path }} && docker compose -f {{ docker_compose_file }} up -d --scale worker={{ time_scaling_offhours_workers }} >> /var/log/bisect-scale.log 2>&1"
+        user: "{{ app_user }}"
+
+    - name: Minimal workers on weekends
+      ansible.builtin.cron:
+        name: "Bisect Bot weekend scale"
+        minute: "0"
+        hour: "0"
+        weekday: "0,6"
+        job: "cd {{ app_path }} && docker compose -f {{ docker_compose_file }} up -d --scale worker={{ time_scaling_weekend_workers }} >> /var/log/bisect-scale.log 2>&1"
+        user: "{{ app_user }}"
+
+- name: Display autoscale info
+  ansible.builtin.debug:
+    msg: |
+      ⚖️  Auto-scaling Configuration
+      
+      Queue-based scaling: {{ autoscale_enabled | default(true) }}
+      - Min workers: {{ autoscale_min_workers }}
+      - Max workers: {{ autoscale_max_workers }}
+      - Jobs per worker: {{ autoscale_jobs_per_worker }}
+      - Check interval: every {{ autoscale_cron_interval }} minutes
+      
+      Time-based scaling: {{ time_scaling_enabled | default(false) }}
+      {% if time_scaling_enabled | default(false) %}
+      - Workday ({{ time_scaling_workday_start }}-{{ time_scaling_workday_end }}): {{ time_scaling_workday_workers }} workers
+      - Off-hours: {{ time_scaling_offhours_workers }} workers
+      - Weekends: {{ time_scaling_weekend_workers }} workers
+      {% endif %}
+      
+      Manual scaling:
+        ansible-playbook playbooks/scale.yml -e workers=5
+
+
+
+

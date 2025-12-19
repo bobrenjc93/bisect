@@ -1,0 +1,95 @@
+# Docker Role - Install and configure Docker
+# This role installs Docker and Docker Compose on the server.
+
+---
+- name: Check if Docker is installed
+  ansible.builtin.command: docker --version
+  register: docker_installed
+  ignore_errors: true
+  changed_when: false
+
+- name: Install Docker
+  when: docker_installed.rc != 0
+  block:
+    - name: Install Docker prerequisites
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker packages
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+- name: Ensure Docker service is running
+  ansible.builtin.systemd:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Add users to docker group
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups: docker
+    append: true
+  loop:
+    - "{{ app_user }}"
+
+- name: Configure Docker daemon
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: |
+      {
+        "log-driver": "json-file",
+        "log-opts": {
+          "max-size": "{{ docker_log_max_size }}",
+          "max-file": "{{ docker_log_max_file }}"
+        },
+        "storage-driver": "overlay2",
+        "live-restore": true
+      }
+    mode: "0644"
+  notify: Restart Docker
+
+- name: Create Docker cleanup cron job
+  ansible.builtin.cron:
+    name: "Docker cleanup"
+    minute: "0"
+    hour: "3"
+    job: "docker system prune -af --volumes --filter 'until=24h' >> /var/log/docker-cleanup.log 2>&1"
+    user: root
+
+- name: Verify Docker installation
+  ansible.builtin.command: docker compose version
+  register: compose_version
+  changed_when: false
+
+- name: Display Docker version info
+  ansible.builtin.debug:
+    msg: |
+      Docker: {{ docker_installed.stdout | default('Newly installed') }}
+      Compose: {{ compose_version.stdout }}
+
+
+
+

@@ -1,0 +1,61 @@
+# Development overrides for docker-compose.yml
+# This file is automatically merged with docker-compose.yml when running:
+#   docker compose up
+#
+# For production deployments, use:
+#   docker compose -f docker-compose.yml up
+#
+version: "3.8"
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Run as root in development to access Docker socket
+    user: root
+    environment:
+      # Enable development mode
+      - DEV_MODE=true
+      # Reduce timeout for faster iteration
+      - BISECT_TIMEOUT_SECONDS=300
+      # GitHub OAuth for UI authentication
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - BASE_URL=${BASE_URL:-http://localhost:8000}
+      - SESSION_SECRET=${SESSION_SECRET:-dev-session-secret-change-me}
+    # Mount source code for live editing
+    volumes:
+      - ./app:/app/app:ro
+      - ./tests:/app/tests:ro
+      - ./alembic:/app/alembic:ro
+    ports:
+      - "8000:8000"
+    # Run migrations before starting the server
+    command: >
+      sh -c "
+        echo 'Running database migrations...' &&
+        alembic upgrade head &&
+        echo 'Starting server...' &&
+        python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+    # Don't restart on failure during development
+    restart: "no"
+
+  # Expose PostgreSQL port for direct access during development
+  postgres:
+    ports:
+      - "5432:5432"
+
+  # ngrok for webhook testing (uncomment and set NGROK_AUTHTOKEN in .env)
+  # ngrok:
+  #   image: ngrok/ngrok:latest
+  #   command: http bot:8000 --log stdout
+  #   environment:
+  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+  #   ports:
+  #     - "4040:4040"
+  #   depends_on:
+  #     - bot
+  #   networks:
+  #     - frontend

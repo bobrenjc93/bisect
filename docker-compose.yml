@@ -1,0 +1,89 @@
+version: "3.8"
+
+# Simplified architecture: each instance runs both web server + bisect jobs.
+# Deploy multiple instances behind a load balancer for horizontal scaling.
+
+services:
+  # PostgreSQL database (shared across all instances)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bisect
+      POSTGRES_USER: ${POSTGRES_USER:-bisect}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bisect}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - backend
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_READ_SEARCH
+      - FOWNER
+
+  # Build the runner image on startup
+  runner-build:
+    image: docker:24-cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./docker:/build:ro
+    command: >
+      sh -c "docker build -t bisect-runner:latest -f /build/Dockerfile.runner /build"
+    networks: []
+    restart: "no"
+
+  # Unified bisect-bot service (web server + job processing)
+  # Scale with: docker compose up -d --scale bot=5
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_SLUG=${GITHUB_APP_SLUG:-bisect-bot}
+      - GITHUB_PRIVATE_KEY_PATH=/app/secrets/private-key.pem
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-bisect}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/bisect
+      - DOCKER_RUNNER_IMAGE=bisect-runner:latest
+      - BISECT_TIMEOUT_SECONDS=1800
+      - MAX_CONCURRENT_JOBS=4
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+    volumes:
+      # Mount the private key (read-only)
+      - ./secrets:/app/secrets:ro
+      # Mount Docker socket to spawn bisect containers
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      runner-build:
+        condition: service_completed_successfully
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:

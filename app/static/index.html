@@ -1,0 +1,2435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bisect Bot — Git Bisection Automation</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a25;
+            --bg-card: #15151f;
+            --bg-card-hover: #1c1c28;
+            --text-primary: #e8e8ed;
+            --text-secondary: #9494a8;
+            --text-muted: #5c5c70;
+            --accent-primary: #6366f1;
+            --accent-secondary: #818cf8;
+            --accent-glow: rgba(99, 102, 241, 0.3);
+            --success: #10b981;
+            --success-dim: rgba(16, 185, 129, 0.15);
+            --warning: #f59e0b;
+            --warning-dim: rgba(245, 158, 11, 0.15);
+            --error: #ef4444;
+            --error-dim: rgba(239, 68, 68, 0.15);
+            --border-color: #2a2a3a;
+            --border-glow: rgba(99, 102, 241, 0.4);
+            --gradient-1: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #a855f7 100%);
+            --gradient-2: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+            --shadow-soft: 0 4px 20px rgba(0, 0, 0, 0.3);
+            --shadow-glow: 0 0 30px var(--accent-glow);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        /* Background pattern */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at top left, rgba(99, 102, 241, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at bottom right, rgba(139, 92, 246, 0.08) 0%, transparent 50%),
+                repeating-linear-gradient(
+                    0deg,
+                    transparent,
+                    transparent 50px,
+                    rgba(255, 255, 255, 0.01) 50px,
+                    rgba(255, 255, 255, 0.01) 51px
+                ),
+                repeating-linear-gradient(
+                    90deg,
+                    transparent,
+                    transparent 50px,
+                    rgba(255, 255, 255, 0.01) 50px,
+                    rgba(255, 255, 255, 0.01) 51px
+                );
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 24px;
+        }
+
+        /* Header */
+        header {
+            border-bottom: 1px solid var(--border-color);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10, 10, 15, 0.8);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 0;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            background: var(--gradient-1);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 18px;
+            box-shadow: var(--shadow-glow);
+        }
+
+        .logo-text {
+            font-weight: 600;
+            font-size: 20px;
+            letter-spacing: -0.5px;
+        }
+
+        .logo-text span {
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        .header-nav {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .nav-link:hover {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .user-menu {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid var(--border-color);
+            transition: border-color 0.2s ease;
+        }
+
+        .user-avatar:hover {
+            border-color: var(--accent-primary);
+        }
+
+        .user-name {
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            text-decoration: none;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-primary {
+            background: var(--gradient-1);
+            color: white;
+            box-shadow: var(--shadow-glow);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 0 40px var(--accent-glow);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+            border-color: var(--accent-primary);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-secondary);
+        }
+
+        .btn-ghost:hover:not(:disabled) {
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 13px;
+        }
+
+        .btn-lg {
+            padding: 14px 28px;
+            font-size: 16px;
+        }
+
+        /* Hero section (landing) */
+        .hero {
+            padding: 100px 0;
+            text-align: center;
+        }
+
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 100px;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        .hero-badge::before {
+            content: '⚡';
+        }
+
+        .hero h1 {
+            font-size: 56px;
+            font-weight: 700;
+            letter-spacing: -2px;
+            line-height: 1.1;
+            margin-bottom: 24px;
+            background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero h1 span {
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            background-clip: text;
+        }
+
+        .hero p {
+            font-size: 18px;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 40px;
+            line-height: 1.7;
+        }
+
+        .hero-cta {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+        }
+
+        .hero-terminal {
+            max-width: 700px;
+            margin: 60px auto 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+            text-align: left;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .terminal-header {
+            display: flex;
+            gap: 8px;
+            padding: 12px 16px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .terminal-dot.red { background: #ff5f57; }
+        .terminal-dot.yellow { background: #febc2e; }
+        .terminal-dot.green { background: #28c840; }
+
+        .terminal-content {
+            padding: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.8;
+        }
+
+        .terminal-line {
+            display: flex;
+            gap: 8px;
+        }
+
+        .terminal-prompt {
+            color: var(--accent-secondary);
+        }
+
+        .terminal-command {
+            color: var(--text-primary);
+        }
+
+        .terminal-output {
+            color: var(--text-secondary);
+            padding-left: 24px;
+        }
+
+        .terminal-success {
+            color: var(--success);
+        }
+
+        /* Dashboard */
+        .dashboard {
+            padding: 40px 0;
+        }
+
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+
+        .dashboard-title {
+            font-size: 28px;
+            font-weight: 600;
+            letter-spacing: -0.5px;
+        }
+
+        .dashboard-subtitle {
+            color: var(--text-secondary);
+            margin-top: 4px;
+            font-size: 14px;
+        }
+
+        /* Stats grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.2s ease;
+        }
+
+        .stat-card:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 20px var(--accent-glow);
+        }
+
+        .stat-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            margin-bottom: 16px;
+        }
+
+        .stat-icon.purple { background: rgba(99, 102, 241, 0.15); }
+        .stat-icon.green { background: var(--success-dim); }
+        .stat-icon.yellow { background: var(--warning-dim); }
+        .stat-icon.red { background: var(--error-dim); }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+            letter-spacing: -1px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        /* Content sections */
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: var(--gradient-1);
+            border-radius: 2px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .card-title {
+            font-weight: 600;
+            font-size: 15px;
+        }
+
+        .card-body {
+            padding: 20px;
+        }
+
+        /* Form elements */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .form-input, .form-select, .form-textarea {
+            width: 100%;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .form-input:focus, .form-select:focus, .form-textarea:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .form-input::placeholder, .form-textarea::placeholder {
+            color: var(--text-muted);
+        }
+
+        .form-select {
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239494a8' d='M6 8.5L1 3.5h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 36px;
+        }
+
+        .form-select option {
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .form-textarea {
+            min-height: 100px;
+            resize: vertical;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 6px;
+        }
+
+        /* Repository selector */
+        .repo-selector {
+            display: grid;
+            gap: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .repo-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .repo-item:hover {
+            border-color: var(--accent-primary);
+            background: var(--bg-card-hover);
+        }
+
+        .repo-item.selected {
+            border-color: var(--accent-primary);
+            background: rgba(99, 102, 241, 0.1);
+        }
+
+        .repo-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .repo-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: var(--bg-tertiary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .repo-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .repo-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .repo-badge {
+            padding: 4px 10px;
+            border-radius: 100px;
+            font-size: 11px;
+            font-weight: 500;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+
+        .repo-badge.private {
+            background: var(--warning-dim);
+            color: var(--warning);
+        }
+
+        /* Commit selector */
+        .commits-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        .commits-grid > .form-group {
+            min-width: 0; /* Allow flex children to shrink properly */
+        }
+
+        @media (max-width: 900px) {
+            .commits-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .commit-list {
+            display: grid;
+            gap: 8px;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-top: 12px;
+        }
+
+        .commit-item {
+            display: grid;
+            grid-template-columns: auto 1fr auto;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            min-width: 0; /* Prevent overflow */
+        }
+
+        .commit-item:hover {
+            border-color: var(--accent-primary);
+        }
+
+        .commit-item.selected {
+            border-color: var(--success);
+            background: var(--success-dim);
+        }
+
+        .commit-sha {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            padding: 4px 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            color: var(--accent-secondary);
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .commit-message {
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            min-width: 0; /* Critical for text-overflow to work in grid */
+        }
+
+        .commit-date {
+            font-size: 12px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        /* Wizard steps */
+        .wizard {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .wizard-steps {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 40px;
+        }
+
+        .wizard-step {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .wizard-step-number {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 600;
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+            border: 2px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .wizard-step.active .wizard-step-number {
+            background: var(--gradient-1);
+            color: white;
+            border-color: transparent;
+        }
+
+        .wizard-step.completed .wizard-step-number {
+            background: var(--success);
+            color: white;
+            border-color: transparent;
+        }
+
+        .wizard-step-label {
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .wizard-step.active .wizard-step-label,
+        .wizard-step.completed .wizard-step-label {
+            color: var(--text-primary);
+        }
+
+        .wizard-step-divider {
+            width: 40px;
+            height: 2px;
+            background: var(--border-color);
+        }
+
+        .wizard-step.completed + .wizard-step-divider {
+            background: var(--success);
+        }
+
+        .wizard-actions {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 32px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        /* Jobs table */
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .jobs-table th {
+            text-align: left;
+            padding: 12px 16px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .jobs-table td {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+
+        .jobs-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .jobs-table tr:hover td {
+            background: var(--bg-card-hover);
+        }
+
+        .job-repo {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--accent-secondary);
+        }
+
+        .job-sha {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            padding: 2px 6px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            color: var(--text-secondary);
+        }
+
+        .job-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 100px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .job-status.success {
+            background: var(--success-dim);
+            color: var(--success);
+        }
+
+        .job-status.failed {
+            background: var(--error-dim);
+            color: var(--error);
+        }
+
+        .job-status.running {
+            background: rgba(99, 102, 241, 0.15);
+            color: var(--accent-secondary);
+            position: relative;
+        }
+
+        .job-status.running::before {
+            content: '';
+            position: absolute;
+            left: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 6px;
+            height: 6px;
+            background: var(--accent-secondary);
+            border-radius: 50%;
+            animation: pulse 1.5s infinite;
+        }
+
+        .job-status.running {
+            padding-left: 20px;
+        }
+
+        .job-status.pending {
+            background: var(--warning-dim);
+            color: var(--warning);
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .job-status.pending::before {
+            content: '';
+            position: absolute;
+            left: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 6px;
+            height: 6px;
+            background: var(--warning);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .job-status.cancelled {
+            background: var(--bg-tertiary);
+            color: var(--text-muted);
+        }
+
+        .btn-danger {
+            background: var(--error);
+            color: white;
+            border: 1px solid var(--error);
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: #dc2626;
+            border-color: #dc2626;
+        }
+
+        .job-time {
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        /* Empty states */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .empty-state-text {
+            color: var(--text-secondary);
+            max-width: 400px;
+            margin: 0 auto 24px;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 4px;
+            background: var(--bg-secondary);
+            padding: 4px;
+            border-radius: 10px;
+            margin-bottom: 24px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            background: transparent;
+        }
+
+        .tab:hover {
+            color: var(--text-primary);
+        }
+
+        .tab.active {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            box-shadow: var(--shadow-soft);
+        }
+
+        /* Loading spinner */
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-color);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 40px;
+            color: var(--text-secondary);
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .modal {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            animation: slideUp 0.3s ease;
+        }
+
+        .modal-header {
+            padding: 20px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+            line-height: 1;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+        }
+
+        .modal-body {
+            padding: 24px;
+        }
+
+        .modal-footer {
+            padding: 16px 24px;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 36px;
+            }
+
+            .header-nav {
+                display: none;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .jobs-table {
+                display: block;
+                overflow-x: auto;
+            }
+
+            .wizard-step-label {
+                display: none;
+            }
+        }
+
+        /* Animations */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.4s ease forwards;
+        }
+
+        .delay-1 { animation-delay: 0.1s; opacity: 0; }
+        .delay-2 { animation-delay: 0.2s; opacity: 0; }
+        .delay-3 { animation-delay: 0.3s; opacity: 0; }
+        .delay-4 { animation-delay: 0.4s; opacity: 0; }
+
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 1000;
+        }
+
+        .toast {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-top: 12px;
+            box-shadow: var(--shadow-soft);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .toast.error {
+            border-color: var(--error);
+        }
+
+        .toast.success {
+            border-color: var(--success);
+        }
+
+        /* Hidden utility */
+        .hidden {
+            display: none !important;
+        }
+
+        /* Live Terminal Styles */
+        .live-terminal {
+            background: #0d1117;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 20px;
+        }
+
+        .terminal-toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: #161b22;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .terminal-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+
+        .terminal-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .status-indicator.live {
+            background: var(--success);
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-indicator.complete {
+            background: var(--success);
+        }
+
+        .status-indicator.error {
+            background: var(--error);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .terminal-output {
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            max-height: 400px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .terminal-line {
+            margin: 0;
+            padding: 2px 0;
+        }
+
+        .terminal-line.status {
+            color: var(--accent-secondary);
+        }
+
+        .terminal-line.error {
+            color: var(--error);
+        }
+
+        .terminal-line.success {
+            color: var(--success);
+        }
+
+        .terminal-line.info {
+            color: var(--text-secondary);
+        }
+
+        .terminal-cursor {
+            display: inline-block;
+            width: 8px;
+            height: 16px;
+            background: var(--accent-secondary);
+            animation: blink 1s step-end infinite;
+            vertical-align: text-bottom;
+        }
+
+        @keyframes blink {
+            50% { opacity: 0; }
+        }
+
+        /* Auto-scroll toggle */
+        .auto-scroll-toggle {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .auto-scroll-toggle input {
+            accent-color: var(--accent-primary);
+        }
+
+        /* Search input */
+        .search-input {
+            position: relative;
+        }
+
+        .search-input input {
+            padding-left: 40px;
+        }
+
+        .search-input::before {
+            content: '🔍';
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 14px;
+            opacity: 0.5;
+        }
+
+        /* New bisect button */
+        .new-bisect-btn {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .new-bisect-btn::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(45deg, transparent 30%, rgba(255,255,255,0.1) 50%, transparent 70%);
+            transform: translateX(-100%);
+            transition: transform 0.5s;
+        }
+
+        .new-bisect-btn:hover::after {
+            transform: translateX(100%);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-content">
+                <a href="/" class="logo" onclick="goHome(); return false;">
+                    <div class="logo-icon">⎇</div>
+                    <div class="logo-text">Bisect<span>Bot</span></div>
+                </a>
+                
+                <nav class="header-nav" id="nav-links">
+                    <!-- Populated by JS -->
+                </nav>
+                
+                <div class="user-menu" id="user-menu">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main id="main-content">
+        <!-- Content populated by JS -->
+    </main>
+
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        // State management
+        const state = {
+            user: null,
+            installations: [],
+            repositories: [],
+            jobs: [],
+            stats: null,
+            activeTab: 'overview',
+            loading: true,
+            githubAppUrl: 'https://github.com/apps',
+            // Wizard state
+            wizardStep: 1,
+            selectedRepo: null,
+            branches: [],
+            commits: [],
+            selectedBranch: null,
+            goodCommit: '',
+            badCommit: '',
+            testCommand: '',
+            dockerImage: 'ubuntu:20.04',
+            showNewBisect: false,
+            repoSearchQuery: '',
+            // Streaming state
+            activeEventSource: null,
+            autoScroll: true,
+        };
+
+        // API helper
+        async function api(endpoint, options = {}) {
+            try {
+                const response = await fetch(endpoint, {
+                    ...options,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...options.headers,
+                    },
+                });
+                
+                if (response.status === 401) {
+                    state.user = null;
+                    render();
+                    return null;
+                }
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ detail: 'Unknown error' }));
+                    throw new Error(error.detail || `API error: ${response.status}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API error:', error);
+                showToast(error.message || 'An error occurred. Please try again.', 'error');
+                return null;
+            }
+        }
+
+        // Toast notifications
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <span>${type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️'}</span>
+                <span>${message}</span>
+            `;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        // Time formatting
+        function formatTime(isoString) {
+            if (!isoString) return '—';
+            const date = new Date(isoString);
+            const now = new Date();
+            const diff = now - date;
+            
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+            if (diff < 604800000) return `${Math.floor(diff / 86400000)}d ago`;
+            
+            return date.toLocaleDateString();
+        }
+
+        // Go to home/dashboard
+        function goHome() {
+            state.showNewBisect = false;
+            state.wizardStep = 1;
+            state.selectedRepo = null;
+            render();
+        }
+
+        // Landing page template
+        function renderLanding() {
+            return `
+                <section class="hero">
+                    <div class="container">
+                        <div class="hero-badge fade-in">Automated Git Bisection</div>
+                        <h1 class="fade-in delay-1">Find breaking commits<br><span>automatically</span></h1>
+                        <p class="fade-in delay-2">
+                            BisectBot helps you find the exact commit that broke your code. 
+                            Connect your repository, specify a range, and let us do the rest.
+                        </p>
+                        <div class="hero-cta fade-in delay-3">
+                            <a href="/auth/login" class="btn btn-primary btn-lg">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                                </svg>
+                                Sign in with GitHub
+                            </a>
+                        </div>
+                        
+                        <div class="hero-terminal fade-in delay-4">
+                            <div class="terminal-header">
+                                <div class="terminal-dot red"></div>
+                                <div class="terminal-dot yellow"></div>
+                                <div class="terminal-dot green"></div>
+                            </div>
+                            <div class="terminal-content">
+                                <div class="terminal-line">
+                                    <span class="terminal-prompt">1.</span>
+                                    <span class="terminal-command">Connect your GitHub repository</span>
+                                </div>
+                                <div class="terminal-line">
+                                    <span class="terminal-prompt">2.</span>
+                                    <span class="terminal-command">Select good and bad commits</span>
+                                </div>
+                                <div class="terminal-line">
+                                    <span class="terminal-prompt">3.</span>
+                                    <span class="terminal-command">Provide your test command</span>
+                                </div>
+                                <br>
+                                <div class="terminal-line terminal-success">
+                                    <span class="terminal-prompt">✓</span>
+                                    <span>We'll find the culprit commit for you!</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            `;
+        }
+
+        // New Bisect Wizard
+        function renderNewBisectWizard() {
+            return `
+                <section class="dashboard">
+                    <div class="container">
+                        <div class="wizard">
+                            <div class="wizard-steps">
+                                <div class="wizard-step ${state.wizardStep >= 1 ? (state.wizardStep > 1 ? 'completed' : 'active') : ''}">
+                                    <div class="wizard-step-number">${state.wizardStep > 1 ? '✓' : '1'}</div>
+                                    <span class="wizard-step-label">Select Repository</span>
+                                </div>
+                                <div class="wizard-step-divider"></div>
+                                <div class="wizard-step ${state.wizardStep >= 2 ? (state.wizardStep > 2 ? 'completed' : 'active') : ''}">
+                                    <div class="wizard-step-number">${state.wizardStep > 2 ? '✓' : '2'}</div>
+                                    <span class="wizard-step-label">Choose Commits</span>
+                                </div>
+                                <div class="wizard-step-divider"></div>
+                                <div class="wizard-step ${state.wizardStep >= 3 ? 'active' : ''}">
+                                    <div class="wizard-step-number">3</div>
+                                    <span class="wizard-step-label">Configure & Run</span>
+                                </div>
+                            </div>
+                            
+                            <div class="card fade-in">
+                                <div class="card-header">
+                                    <h2 class="card-title">
+                                        ${state.wizardStep === 1 ? '📦 Select Repository' : 
+                                          state.wizardStep === 2 ? '🔀 Choose Commits' : 
+                                          '⚙️ Configure & Run'}
+                                    </h2>
+                                </div>
+                                <div class="card-body">
+                                    ${state.wizardStep === 1 ? renderStep1() : 
+                                      state.wizardStep === 2 ? renderStep2() : 
+                                      renderStep3()}
+                                </div>
+                            </div>
+                            
+                            <div class="wizard-actions">
+                                <button class="btn btn-secondary" onclick="${state.wizardStep === 1 ? 'goHome()' : 'prevStep()'}">
+                                    ${state.wizardStep === 1 ? '← Back to Dashboard' : '← Previous'}
+                                </button>
+                                ${state.wizardStep < 3 ? `
+                                    <button class="btn btn-primary" onclick="nextStep()" 
+                                        ${!canProceed() ? 'disabled' : ''}>
+                                        Next →
+                                    </button>
+                                ` : `
+                                    <button class="btn btn-primary btn-lg" onclick="startBisect()" 
+                                        ${!canProceed() ? 'disabled' : ''}>
+                                        🚀 Start Bisect
+                                    </button>
+                                `}
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            `;
+        }
+
+        function renderStep1() {
+            if (state.repositories.length === 0) {
+                return `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📦</div>
+                        <h3 class="empty-state-title">No repositories found</h3>
+                        <p class="empty-state-text">
+                            Install the BisectBot GitHub App on your repositories to get started.
+                        </p>
+                        <a href="${state.githubAppUrl}" target="_blank" class="btn btn-primary">
+                            Install GitHub App
+                        </a>
+                    </div>
+                `;
+            }
+            
+            // Get repos that have been used for bisects before
+            const reposWithBisects = new Set(
+                state.jobs
+                    .filter(job => job.repo)
+                    .map(job => job.repo)
+            );
+            
+            // Sort repositories: previously used ones first, then alphabetically
+            const sortedRepos = [...state.repositories].sort((a, b) => {
+                const aUsed = reposWithBisects.has(a.full_name);
+                const bUsed = reposWithBisects.has(b.full_name);
+                if (aUsed && !bUsed) return -1;
+                if (!aUsed && bUsed) return 1;
+                return a.full_name.localeCompare(b.full_name);
+            });
+            
+            const query = state.repoSearchQuery.toLowerCase();
+            const filteredRepos = query 
+                ? sortedRepos.filter(repo => repo.full_name.toLowerCase().includes(query))
+                : sortedRepos;
+            
+            return `
+                <div class="form-group">
+                    <div class="search-input">
+                        <input type="text" class="form-input" placeholder="Search repositories..." 
+                            id="repo-search" value="${state.repoSearchQuery}" oninput="filterRepos(this.value)">
+                    </div>
+                </div>
+                <div class="repo-selector" id="repo-list">
+                    ${filteredRepos.map(repo => {
+                        const hasHistory = reposWithBisects.has(repo.full_name);
+                        return `
+                        <div class="repo-item ${state.selectedRepo?.id === repo.id ? 'selected' : ''}" 
+                            onclick="selectRepo(${JSON.stringify(repo).replace(/"/g, '&quot;')})">
+                            <div class="repo-info">
+                                <div class="repo-icon">${repo.private ? '🔒' : '📁'}</div>
+                                <div>
+                                    <div class="repo-name">${repo.full_name}${hasHistory ? ' <span style="color: var(--accent-secondary); font-size: 12px;">⏱ Recent</span>' : ''}</div>
+                                    <div class="repo-desc">${repo.description || 'No description'}</div>
+                                </div>
+                            </div>
+                            <span class="repo-badge ${repo.private ? 'private' : ''}">${repo.private ? 'Private' : 'Public'}</span>
+                        </div>
+                    `}).join('')}
+                </div>
+            `;
+        }
+
+        function renderStep2() {
+            return `
+                <div class="form-group">
+                    <label class="form-label">Branch</label>
+                    <select class="form-select" id="branch-select" onchange="selectBranch(this.value)">
+                        <option value="">Select a branch...</option>
+                        ${state.branches.map(b => `
+                            <option value="${b.name}" ${state.selectedBranch === b.name ? 'selected' : ''}>
+                                ${b.name}
+                            </option>
+                        `).join('')}
+                    </select>
+                </div>
+                
+                <div class="commits-grid">
+                    <div class="form-group">
+                        <label class="form-label">Good Commit (known working)</label>
+                        <input type="text" class="form-input" placeholder="Enter SHA or select below..." 
+                            value="${state.goodCommit}" oninput="state.goodCommit = this.value; updateStartButton()"
+                            style="font-family: 'JetBrains Mono', monospace;">
+                        <p class="form-hint">The last known working commit</p>
+                        ${state.commits.length > 0 ? `
+                            <div class="commit-list">
+                                ${state.commits.map(c => `
+                                    <div class="commit-item ${state.goodCommit === c.sha ? 'selected' : ''}" 
+                                        onclick="setGoodCommit('${c.sha}')" title="${escapeHtml(c.message)}">
+                                        <span class="commit-sha">${c.short_sha}</span>
+                                        <span class="commit-message">${escapeHtml(c.message)}</span>
+                                        <span class="commit-date">${formatTime(c.date)}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Bad Commit (broken)</label>
+                        <input type="text" class="form-input" placeholder="Enter SHA or select below..." 
+                            value="${state.badCommit}" oninput="state.badCommit = this.value; updateStartButton()"
+                            style="font-family: 'JetBrains Mono', monospace;">
+                        <p class="form-hint">The first known broken commit</p>
+                        ${state.commits.length > 0 ? `
+                            <div class="commit-list">
+                                ${state.commits.map(c => `
+                                    <div class="commit-item ${state.badCommit === c.sha ? 'selected' : ''}" 
+                                        onclick="setBadCommit('${c.sha}')" title="${escapeHtml(c.message)}">
+                                        <span class="commit-sha">${c.short_sha}</span>
+                                        <span class="commit-message">${escapeHtml(c.message)}</span>
+                                        <span class="commit-date">${formatTime(c.date)}</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Helper to escape HTML and prevent XSS in commit messages
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function renderStep3() {
+            return `
+                <div class="form-group">
+                    <label class="form-label">Test Command</label>
+                    <textarea class="form-textarea" placeholder="npm test&#10;pytest&#10;make test" 
+                        oninput="state.testCommand = this.value; updateStartButton()">${state.testCommand}</textarea>
+                    <p class="form-hint">
+                        The command that should exit with code 0 for good commits and non-zero for bad commits.
+                    </p>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">Docker Image (Optional)</label>
+                    <input type="text" class="form-input" 
+                        placeholder="e.g., ubuntu:20.04, python:3.9, node:18"
+                        value="${state.dockerImage}"
+                        oninput="state.dockerImage = this.value"
+                        style="font-family: 'JetBrains Mono', monospace;">
+                    <p class="form-hint">
+                        Leave empty to use the default bisect runner image. Specify a custom image (e.g., <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">ubuntu:20.04</code>) if your project needs a specific environment.
+                        The image must have <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">git</code> and <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">python</code> installed.
+                    </p>
+                </div>
+                
+                <div class="card" style="background: var(--bg-secondary); margin-top: 24px;">
+                    <div class="card-body">
+                        <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 16px;">📋 Summary</h3>
+                        <table style="width: 100%; font-size: 14px;">
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary); width: 140px;">Repository:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace;">${state.selectedRepo?.full_name || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Branch:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace;">${state.selectedBranch || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Good Commit:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace; color: var(--success);">${state.goodCommit?.slice(0, 7) || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Bad Commit:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace; color: var(--error);">${state.badCommit?.slice(0, 7) || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary); vertical-align: top;">Test Command:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace; white-space: pre-wrap;">${state.testCommand || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Docker Image:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace;">${state.dockerImage || 'Default (bisect-runner)'}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Check if can proceed to next step
+        function canProceed() {
+            switch (state.wizardStep) {
+                case 1: return !!state.selectedRepo;
+                case 2: return state.goodCommit && state.badCommit;
+                case 3: return state.testCommand.trim().length > 0;
+                default: return false;
+            }
+        }
+
+        // Update the start button's disabled state without full re-render
+        function updateStartButton() {
+            const btn = document.querySelector('.wizard-actions .btn-primary');
+            if (btn) {
+                btn.disabled = !canProceed();
+            }
+        }
+
+        // Navigation functions
+        async function nextStep() {
+            if (!canProceed()) return;
+            
+            if (state.wizardStep === 1) {
+                // Load branches for selected repo
+                const data = await api(`/api/repos/${state.selectedRepo.owner}/${state.selectedRepo.name}/branches`);
+                if (data) {
+                    state.branches = data.branches;
+                    // Auto-select default branch if available
+                    const defaultBranch = state.selectedRepo.default_branch || 'main';
+                    const hasDefault = state.branches.some(b => b.name === defaultBranch);
+                    if (hasDefault) {
+                        state.selectedBranch = defaultBranch;
+                        await loadCommits();
+                    }
+                }
+            }
+            
+            state.wizardStep++;
+            render();
+        }
+
+        function prevStep() {
+            state.wizardStep = Math.max(1, state.wizardStep - 1);
+            render();
+        }
+
+        // Repository selection
+        function selectRepo(repo) {
+            state.selectedRepo = repo;
+            state.branches = [];
+            state.commits = [];
+            state.selectedBranch = null;
+            state.goodCommit = '';
+            state.badCommit = '';
+            render();
+        }
+
+        function filterRepos(query) {
+            state.repoSearchQuery = query;
+            // Use DOM manipulation for fast filtering without full re-render
+            const items = document.querySelectorAll('.repo-item');
+            const q = query.toLowerCase();
+            items.forEach(item => {
+                const name = item.querySelector('.repo-name').textContent.toLowerCase();
+                item.style.display = name.includes(q) ? '' : 'none';
+            });
+        }
+
+        // Branch and commit selection
+        async function selectBranch(branchName) {
+            state.selectedBranch = branchName;
+            if (branchName) {
+                await loadCommits();
+            }
+            render();
+        }
+
+        async function loadCommits() {
+            if (!state.selectedRepo || !state.selectedBranch) return;
+            
+            const data = await api(
+                `/api/repos/${state.selectedRepo.owner}/${state.selectedRepo.name}/commits?sha=${state.selectedBranch}`
+            );
+            if (data) {
+                state.commits = data.commits;
+            }
+        }
+
+        function setGoodCommit(sha) {
+            state.goodCommit = sha;
+            render();
+        }
+
+        function setBadCommit(sha) {
+            state.badCommit = sha;
+            render();
+        }
+
+        // Start bisect job
+        async function startBisect() {
+            if (!canProceed()) return;
+            
+            const requestBody = {
+                owner: state.selectedRepo.owner,
+                repo: state.selectedRepo.name,
+                good_sha: state.goodCommit,
+                bad_sha: state.badCommit,
+                test_command: state.testCommand,
+                installation_id: state.selectedRepo.installation_id,
+            };
+            
+            // Only include docker_image if user specified one
+            if (state.dockerImage.trim()) {
+                requestBody.docker_image = state.dockerImage.trim();
+            }
+            
+            const result = await api('/api/bisect', {
+                method: 'POST',
+                body: JSON.stringify(requestBody),
+            });
+            
+            if (result) {
+                showToast(`Bisect job #${result.id} created! Opening live view...`, 'success');
+                // Reset wizard and go to jobs
+                state.showNewBisect = false;
+                state.wizardStep = 1;
+                state.selectedRepo = null;
+                state.goodCommit = '';
+                state.badCommit = '';
+                state.testCommand = '';
+                state.dockerImage = 'ubuntu:20.04';
+                state.activeTab = 'jobs';
+                // Refresh jobs list
+                const jobsData = await api('/api/jobs');
+                state.jobs = jobsData?.jobs || [];
+                render();
+                
+                // Automatically open the job viewer with streaming
+                setTimeout(() => viewJob(result.id), 100);
+            }
+        }
+
+        // Show new bisect wizard
+        async function showNewBisectWizard() {
+            state.showNewBisect = true;
+            state.wizardStep = 1;
+            
+            // Load user's repositories if not already loaded
+            if (state.repositories.length === 0) {
+                const data = await api('/api/user/repos');
+                if (data) {
+                    state.repositories = data.repositories;
+                }
+            }
+            
+            render();
+        }
+
+        // Dashboard template
+        function renderDashboard() {
+            const { stats, installations, jobs } = state;
+            
+            return `
+                <section class="dashboard">
+                    <div class="container">
+                        <div class="dashboard-header fade-in">
+                            <div>
+                                <h1 class="dashboard-title">Dashboard</h1>
+                                <p class="dashboard-subtitle">Welcome back, ${state.user.github_login}</p>
+                            </div>
+                            <button class="btn btn-primary new-bisect-btn" onclick="showNewBisectWizard()">
+                                <span>+</span> New Bisect
+                            </button>
+                        </div>
+                        
+                        <div class="stats-grid">
+                            <div class="stat-card fade-in delay-1">
+                                <div class="stat-icon purple">📦</div>
+                                <div class="stat-value">${stats?.installations || 0}</div>
+                                <div class="stat-label">Installations</div>
+                            </div>
+                            <div class="stat-card fade-in delay-2">
+                                <div class="stat-icon green">📁</div>
+                                <div class="stat-value">${stats?.repositories || 0}</div>
+                                <div class="stat-label">Repositories</div>
+                            </div>
+                            <div class="stat-card fade-in delay-3">
+                                <div class="stat-icon yellow">🔄</div>
+                                <div class="stat-value">${stats?.jobs?.total || 0}</div>
+                                <div class="stat-label">Total Jobs</div>
+                            </div>
+                            <div class="stat-card fade-in delay-4">
+                                <div class="stat-icon green">✓</div>
+                                <div class="stat-value">${stats?.jobs?.successful || 0}</div>
+                                <div class="stat-label">Successful</div>
+                            </div>
+                        </div>
+                        
+                        <div class="tabs">
+                            <button class="tab ${state.activeTab === 'overview' ? 'active' : ''}" onclick="setTab('overview')">Overview</button>
+                            <button class="tab ${state.activeTab === 'jobs' ? 'active' : ''}" onclick="setTab('jobs')">Jobs</button>
+                        </div>
+                        
+                        ${renderTabContent()}
+                    </div>
+                </section>
+            `;
+        }
+
+        function renderTabContent() {
+            switch (state.activeTab) {
+                case 'jobs':
+                    return renderJobsTab();
+                default:
+                    return renderOverviewTab();
+            }
+        }
+
+        function renderOverviewTab() {
+            const { jobs } = state;
+            
+            return `
+                <div class="section fade-in">
+                    <div class="section-header">
+                        <h2 class="section-title">Quick Start</h2>
+                    </div>
+                    <div class="card">
+                        <div class="card-body" style="text-align: center; padding: 40px;">
+                            <div style="font-size: 48px; margin-bottom: 16px;">🔍</div>
+                            <h3 style="font-size: 20px; font-weight: 600; margin-bottom: 8px;">Start a New Bisect</h3>
+                            <p style="color: var(--text-secondary); max-width: 400px; margin: 0 auto 24px;">
+                                Find the exact commit that introduced a bug by running an automated git bisect.
+                            </p>
+                            <button class="btn btn-primary btn-lg" onclick="showNewBisectWizard()">
+                                <span>+</span> New Bisect
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="section fade-in delay-1">
+                    <div class="section-header">
+                        <h2 class="section-title">Recent Jobs</h2>
+                        ${jobs.length > 0 ? '<button class="btn btn-ghost btn-sm" onclick="setTab(\'jobs\')">View All →</button>' : ''}
+                    </div>
+                    ${jobs.length === 0 ? `
+                        <div class="card">
+                            <div class="empty-state">
+                                <div class="empty-state-icon">📋</div>
+                                <h3 class="empty-state-title">No bisect jobs yet</h3>
+                                <p class="empty-state-text">Create your first bisect job to find the commit that broke your code.</p>
+                            </div>
+                        </div>
+                    ` : `
+                        <div class="card">
+                            <table class="jobs-table">
+                                <thead>
+                                    <tr>
+                                        <th>Repository</th>
+                                        <th>Range</th>
+                                        <th>Status</th>
+                                        <th>Created</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${jobs.slice(0, 5).map(job => `
+                                        <tr onclick="viewJob(${job.id})" style="cursor: pointer;">
+                                            <td><span class="job-repo">${job.repo || '—'}</span></td>
+                                            <td>
+                                                <span class="job-sha">${job.good_sha || '—'}</span>
+                                                →
+                                                <span class="job-sha">${job.bad_sha || '—'}</span>
+                                            </td>
+                                            <td><span class="job-status ${job.status}">${job.status}</span></td>
+                                            <td class="job-time">${formatTime(job.created_at)}</td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        </div>
+                    `}
+                </div>
+            `;
+        }
+
+        function renderJobsTab() {
+            const { jobs } = state;
+            
+            if (jobs.length === 0) {
+                return `
+                    <div class="card fade-in">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">🔍</div>
+                            <h3 class="empty-state-title">No bisect jobs yet</h3>
+                            <p class="empty-state-text">
+                                Create a new bisect job to find the commit that broke your code.
+                            </p>
+                            <button class="btn btn-primary" onclick="showNewBisectWizard()">
+                                <span>+</span> New Bisect
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            return `
+                <div class="card fade-in">
+                    <table class="jobs-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Repository</th>
+                                <th>Range</th>
+                                <th>Status</th>
+                                <th>Culprit</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${jobs.map(job => `
+                                <tr style="cursor: pointer;">
+                                    <td onclick="viewJob(${job.id})">#${job.id}</td>
+                                    <td onclick="viewJob(${job.id})"><span class="job-repo">${job.repo || '—'}</span></td>
+                                    <td onclick="viewJob(${job.id})">
+                                        <span class="job-sha">${job.good_sha || '—'}</span>
+                                        →
+                                        <span class="job-sha">${job.bad_sha || '—'}</span>
+                                    </td>
+                                    <td onclick="viewJob(${job.id})"><span class="job-status ${job.status}">${job.status}</span></td>
+                                    <td onclick="viewJob(${job.id})">${job.culprit_sha ? `<span class="job-sha">${job.culprit_sha}</span>` : '—'}</td>
+                                    <td onclick="viewJob(${job.id})" class="job-time">${formatTime(job.created_at)}</td>
+                                    <td>
+                                        ${job.status === 'running' || job.status === 'pending' ? `
+                                            <button class="btn btn-primary btn-sm" onclick="event.stopPropagation(); viewJob(${job.id})" title="Watch live output">
+                                                📺 Watch
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); cancelJob(${job.id})" title="Cancel this job" style="margin-left: 4px;">
+                                                ✕
+                                            </button>
+                                        ` : job.status === 'failed' || job.status === 'cancelled' ? `
+                                            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); retryJob(${job.id})" title="Retry this job">
+                                                🔄 Retry
+                                            </button>
+                                        ` : ''}
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function renderLoading() {
+            return `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <span>Loading...</span>
+                </div>
+            `;
+        }
+
+        // Navigation and header
+        function renderNav() {
+            const navLinks = document.getElementById('nav-links');
+            const userMenu = document.getElementById('user-menu');
+            
+            if (state.user) {
+                navLinks.innerHTML = `
+                    <a href="/" class="nav-link" onclick="goHome(); return false;">Dashboard</a>
+                `;
+                
+                userMenu.innerHTML = `
+                    <span class="user-name">${state.user.github_login}</span>
+                    <img src="${state.user.github_avatar_url}" alt="" class="user-avatar">
+                    <a href="/auth/logout" class="btn btn-ghost btn-sm">Logout</a>
+                `;
+            } else {
+                navLinks.innerHTML = '';
+                
+                userMenu.innerHTML = `
+                    <a href="/auth/login" class="btn btn-primary">Sign In</a>
+                `;
+            }
+        }
+
+        // Main render function
+        function render() {
+            const main = document.getElementById('main-content');
+            
+            if (state.loading) {
+                main.innerHTML = renderLoading();
+            } else if (!state.user) {
+                main.innerHTML = renderLanding();
+            } else if (state.showNewBisect) {
+                main.innerHTML = renderNewBisectWizard();
+            } else {
+                main.innerHTML = renderDashboard();
+            }
+            
+            renderNav();
+        }
+
+        // Tab switching
+        function setTab(tab) {
+            state.activeTab = tab;
+            render();
+        }
+
+        // View job details with live streaming
+        async function viewJob(jobId) {
+            const job = await api(`/api/jobs/${jobId}`);
+            if (!job) return;
+            
+            const isLiveJob = job.status === 'pending' || job.status === 'running';
+            
+            // Close any existing event source
+            if (state.activeEventSource) {
+                state.activeEventSource.close();
+                state.activeEventSource = null;
+            }
+            
+            // Show job details in a modal
+            const modal = document.createElement('div');
+            modal.className = 'modal-overlay';
+            modal.onclick = (e) => {
+                if (e.target === modal) closeJobModal(modal);
+            };
+            modal.innerHTML = `
+                <div class="modal" style="max-width: 800px;">
+                    <div class="modal-header">
+                        <h2 class="modal-title">Job #${job.id}</h2>
+                        <button class="modal-close" onclick="closeJobModal(this.closest('.modal-overlay'))">&times;</button>
+                    </div>
+                    <div class="modal-body">
+                        <table style="width: 100%; font-size: 14px;">
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary); width: 140px;">Status:</td>
+                                <td style="padding: 8px 0;"><span class="job-status ${job.status}" id="job-status-badge">${job.status}</span></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Repository:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace;">${job.repo || '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Good Commit:</td>
+                                <td style="padding: 8px 0;"><span class="job-sha">${job.good_sha?.slice(0, 7) || '—'}</span></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Bad Commit:</td>
+                                <td style="padding: 8px 0;"><span class="job-sha">${job.bad_sha?.slice(0, 7) || '—'}</span></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Culprit:</td>
+                                <td style="padding: 8px 0;" id="job-culprit">${job.culprit_sha ? `<span class="job-sha" style="background: var(--error-dim); color: var(--error);">${job.culprit_sha?.slice(0, 7)}</span>` : '—'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary); vertical-align: top;">Test Command:</td>
+                                <td style="padding: 8px 0;"><code style="display: block; background: var(--bg-tertiary); padding: 8px 12px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word;">${escapeHtml(job.test_command || '—')}</code></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Docker Image:</td>
+                                <td style="padding: 8px 0; font-family: 'JetBrains Mono', monospace; font-size: 12px;">${job.docker_image || 'Default'}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary);">Created:</td>
+                                <td style="padding: 8px 0;">${formatTime(job.created_at)}</td>
+                            </tr>
+                            ${job.error_message ? `
+                            <tr>
+                                <td style="padding: 8px 0; color: var(--text-secondary); vertical-align: top;">Error:</td>
+                                <td style="padding: 8px 0; color: var(--error);">${escapeHtml(job.error_message)}</td>
+                            </tr>
+                            ` : ''}
+                        </table>
+                        
+                        <!-- Live Terminal Output -->
+                        <div class="live-terminal" id="live-terminal">
+                            <div class="terminal-toolbar">
+                                <div class="terminal-title">
+                                    <span>📺</span>
+                                    <span>${isLiveJob ? 'Live Output' : 'Output Log'}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 16px;">
+                                    <label class="auto-scroll-toggle">
+                                        <input type="checkbox" id="auto-scroll-checkbox" checked onchange="state.autoScroll = this.checked">
+                                        Auto-scroll
+                                    </label>
+                                    <div class="terminal-status" id="terminal-status">
+                                        <div class="status-indicator ${isLiveJob ? 'live' : 'complete'}" id="status-indicator"></div>
+                                        <span id="status-text">${isLiveJob ? 'Streaming...' : 'Complete'}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="terminal-output" id="terminal-output">
+                                ${!isLiveJob && job.output_log ? escapeHtml(job.output_log) : ''}
+                                ${isLiveJob ? '<span class="terminal-cursor"></span>' : ''}
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        ${job.status === 'pending' || job.status === 'running' ? `
+                            <button class="btn btn-danger" onclick="cancelJob(${job.id}); closeJobModal(this.closest('.modal-overlay'))">
+                                ✕ Cancel Job
+                            </button>
+                        ` : ''}
+                        ${job.status === 'failed' || job.status === 'cancelled' ? `
+                            <button class="btn btn-primary" onclick="retryJob(${job.id}); closeJobModal(this.closest('.modal-overlay'))">
+                                🔄 Retry Job
+                            </button>
+                        ` : ''}
+                        <button class="btn btn-secondary" onclick="closeJobModal(this.closest('.modal-overlay'))">Close</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Start streaming if job is live
+            if (isLiveJob) {
+                startJobStream(jobId);
+            }
+        }
+        
+        // Close job modal and cleanup
+        function closeJobModal(modal) {
+            if (state.activeEventSource) {
+                state.activeEventSource.close();
+                state.activeEventSource = null;
+            }
+            modal.remove();
+            // Refresh jobs list to get updated status
+            refreshJobs();
+        }
+        
+        // Refresh jobs list
+        async function refreshJobs() {
+            const jobsData = await api('/api/jobs');
+            state.jobs = jobsData?.jobs || [];
+            render();
+        }
+        
+        // Start streaming job output
+        function startJobStream(jobId) {
+            const output = document.getElementById('terminal-output');
+            const statusIndicator = document.getElementById('status-indicator');
+            const statusText = document.getElementById('status-text');
+            const statusBadge = document.getElementById('job-status-badge');
+            
+            if (!output) return;
+            
+            // Clear cursor while connecting
+            output.innerHTML = '<span class="terminal-line info">Connecting to stream...</span>\n';
+            
+            // Create EventSource for SSE
+            const eventSource = new EventSource(`/api/jobs/${jobId}/stream`);
+            state.activeEventSource = eventSource;
+            
+            eventSource.onopen = () => {
+                output.innerHTML = '';
+                statusText.textContent = 'Connected';
+            };
+            
+            eventSource.addEventListener('log', (e) => {
+                appendTerminalLine(output, e.data);
+            });
+            
+            eventSource.addEventListener('status', (e) => {
+                const status = e.data;
+                if (statusBadge) {
+                    statusBadge.className = `job-status ${status}`;
+                    statusBadge.textContent = status;
+                }
+                
+                if (status === 'running') {
+                    statusIndicator.className = 'status-indicator live';
+                    statusText.textContent = 'Running...';
+                } else if (status === 'success') {
+                    statusIndicator.className = 'status-indicator complete';
+                    statusText.textContent = 'Success';
+                } else if (status === 'failed') {
+                    statusIndicator.className = 'status-indicator error';
+                    statusText.textContent = 'Failed';
+                }
+            });
+            
+            eventSource.addEventListener('progress', (e) => {
+                const [progress, message] = e.data.split('|');
+                statusText.textContent = `${message} (${progress})`;
+            });
+            
+            eventSource.addEventListener('complete', (e) => {
+                eventSource.close();
+                state.activeEventSource = null;
+                
+                // Remove cursor
+                const cursor = output.querySelector('.terminal-cursor');
+                if (cursor) cursor.remove();
+                
+                // Update status
+                if (statusIndicator.classList.contains('live')) {
+                    statusIndicator.className = 'status-indicator complete';
+                    statusText.textContent = 'Complete';
+                }
+            });
+            
+            eventSource.onerror = (e) => {
+                // Don't show error if we intentionally closed
+                if (eventSource.readyState === EventSource.CLOSED) return;
+                
+                appendTerminalLine(output, '⚠️ Connection lost. Reconnecting...', 'error');
+            };
+        }
+        
+        // Append a line to the terminal output
+        function appendTerminalLine(output, text, type = '') {
+            // Remove cursor temporarily
+            const cursor = output.querySelector('.terminal-cursor');
+            if (cursor) cursor.remove();
+            
+            // Determine line type based on content
+            let lineClass = type;
+            if (!lineClass) {
+                if (text.startsWith('✅') || text.startsWith('🎯') || text.includes('SUCCESS')) {
+                    lineClass = 'success';
+                } else if (text.startsWith('❌') || text.startsWith('💥') || text.includes('ERROR') || text.includes('FAILED')) {
+                    lineClass = 'error';
+                } else if (text.startsWith('🚀') || text.startsWith('📦') || text.startsWith('🔀') || text.startsWith('⏳')) {
+                    lineClass = 'status';
+                } else if (text.startsWith('⬇️') || text.startsWith('🐳') || text.startsWith('▶️') || text.startsWith('📜')) {
+                    lineClass = 'info';
+                }
+            }
+            
+            // Create line element
+            const line = document.createElement('div');
+            line.className = `terminal-line ${lineClass}`;
+            line.textContent = text;
+            output.appendChild(line);
+            
+            // Re-add cursor
+            const newCursor = document.createElement('span');
+            newCursor.className = 'terminal-cursor';
+            output.appendChild(newCursor);
+            
+            // Auto-scroll if enabled
+            if (state.autoScroll) {
+                output.scrollTop = output.scrollHeight;
+            }
+        }
+
+        // Retry a failed or cancelled job
+        async function retryJob(jobId) {
+            const result = await api(`/api/jobs/${jobId}/retry`, {
+                method: 'POST',
+            });
+            
+            if (result) {
+                showToast(`Retry job #${result.id} created successfully!`, 'success');
+                // Refresh jobs list
+                const jobsData = await api('/api/jobs');
+                state.jobs = jobsData?.jobs || [];
+                render();
+            }
+        }
+
+        // Cancel a pending or running job
+        async function cancelJob(jobId) {
+            if (!confirm('Are you sure you want to cancel this job?')) {
+                return;
+            }
+            
+            const result = await api(`/api/jobs/${jobId}/cancel`, {
+                method: 'POST',
+            });
+            
+            if (result) {
+                showToast(`Job #${jobId} cancelled successfully`, 'success');
+                // Refresh jobs list
+                const jobsData = await api('/api/jobs');
+                state.jobs = jobsData?.jobs || [];
+                render();
+            }
+        }
+
+        // Initial load
+        async function init() {
+            // Check for error in URL
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('error')) {
+                showToast(`Login failed: ${params.get('error')}`, 'error');
+                history.replaceState({}, '', '/');
+            }
+            
+            // Fetch GitHub App URL
+            const appUrlData = await api('/api/github-app-url');
+            if (appUrlData?.url) {
+                state.githubAppUrl = appUrlData.url;
+            }
+            
+            // Check authentication
+            const authData = await api('/auth/me');
+            
+            if (authData?.authenticated) {
+                state.user = authData.user;
+                
+                // Load dashboard data in parallel
+                // Note: /api/user/repos also syncs installations and repos to the database
+                const [statsData, jobsData, reposData] = await Promise.all([
+                    api('/api/dashboard/stats'),
+                    api('/api/jobs'),
+                    api('/api/user/repos'),
+                ]);
+                
+                state.stats = statsData;
+                state.jobs = jobsData?.jobs || [];
+                state.repositories = reposData?.repositories || [];
+                
+                // Update stats with fresh repo count if available
+                if (state.stats && reposData?.repositories) {
+                    state.stats.repositories = reposData.repositories.length;
+                }
+            }
+            
+            state.loading = false;
+            render();
+        }
+
+        // Start the app
+        init();
+    </script>
+</body>
+</html>

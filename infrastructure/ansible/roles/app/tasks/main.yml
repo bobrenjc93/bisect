@@ -1,0 +1,113 @@
+# App Role - Deploy the Bisect Bot application
+# This role deploys the application code and starts Docker services.
+
+---
+- name: Clone or update application repository
+  ansible.builtin.git:
+    repo: "{{ git_repo }}"
+    dest: "{{ app_path }}"
+    version: "{{ git_branch }}"
+    force: true
+  become_user: "{{ app_user }}"
+  register: git_result
+
+- name: Create .env file from template
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ app_path }}/.env"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0600"
+  notify: Restart application
+
+- name: Copy GitHub App private key
+  ansible.builtin.copy:
+    content: "{{ vault_github_private_key | default('') }}"
+    dest: "{{ app_path }}/secrets/private-key.pem"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0600"
+  when: vault_github_private_key is defined
+  notify: Restart application
+
+- name: Check if private key exists
+  ansible.builtin.stat:
+    path: "{{ app_path }}/secrets/private-key.pem"
+  register: private_key_stat
+
+- name: Warn if private key is missing
+  ansible.builtin.debug:
+    msg: |
+      ⚠️  WARNING: GitHub App private key not found!
+      Please copy your private key to: {{ app_path }}/secrets/private-key.pem
+      
+      You can do this manually:
+        scp path/to/private-key.pem {{ ansible_user }}@{{ ansible_host }}:{{ app_path }}/secrets/
+      
+      Or add vault_github_private_key to your vault.yml
+  when: not private_key_stat.stat.exists
+
+- name: Create production Docker Compose file
+  ansible.builtin.template:
+    src: docker-compose.prod.yml.j2
+    dest: "{{ app_path }}/docker-compose.prod.yml"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0644"
+  notify: Restart application
+
+- name: Create Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ app_path }}/Caddyfile"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: "0644"
+  notify: Restart Caddy
+
+- name: Pull Docker images
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_path }}"
+    files:
+      - "{{ docker_compose_file }}"
+    pull: always
+    state: present
+  register: docker_pull
+
+- name: Build Docker images
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_path }}"
+    files:
+      - "{{ docker_compose_file }}"
+    build: always
+    state: present
+
+- name: Run database migrations
+  ansible.builtin.command:
+    cmd: docker compose -f {{ docker_compose_file }} run --rm -T web alembic upgrade head
+    chdir: "{{ app_path }}"
+  register: migration_result
+  changed_when: "'Running upgrade' in migration_result.stdout"
+
+- name: Display migration result
+  ansible.builtin.debug:
+    msg: "{{ migration_result.stdout_lines }}"
+  when: migration_result.changed
+
+- name: Start application services
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_path }}"
+    files:
+      - "{{ docker_compose_file }}"
+    state: present
+  register: compose_result
+
+- name: Scale workers
+  ansible.builtin.command:
+    cmd: docker compose -f {{ docker_compose_file }} up -d --scale worker={{ worker_replicas }}
+    chdir: "{{ app_path }}"
+  when: worker_replicas is defined
+
+
+
+
