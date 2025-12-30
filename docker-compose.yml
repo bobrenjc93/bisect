@@ -1,6 +1,7 @@
 version: "3.8"
 
-# Simplified architecture: each instance runs both web server + bisect jobs.
+# Simplified architecture: bisect runs directly in the bot container.
+# No Docker-in-Docker, no Docker socket mount needed.
 # Deploy multiple instances behind a load balancer for horizontal scaling.
 
 services:
@@ -30,18 +31,7 @@ services:
       - DAC_READ_SEARCH
       - FOWNER
 
-  # Build the runner image on startup
-  runner-build:
-    image: docker:24-cli
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./docker:/build:ro
-    command: >
-      sh -c "docker build -t bisect-runner:latest -f /build/Dockerfile.runner /build"
-    networks: []
-    restart: "no"
-
-  # Unified bisect-bot service (web server + job processing)
+  # Unified bisect-bot service (web server + bisect execution)
   # Scale with: docker compose up -d --scale bot=5
   bot:
     build:
@@ -55,20 +45,15 @@ services:
       - GITHUB_PRIVATE_KEY_PATH=/app/secrets/private-key.pem
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-bisect}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/bisect
-      - DOCKER_RUNNER_IMAGE=bisect-runner:latest
       - BISECT_TIMEOUT_SECONDS=1800
       - MAX_CONCURRENT_JOBS=4
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
     volumes:
       # Mount the private key (read-only)
       - ./secrets:/app/secrets:ro
-      # Mount Docker socket to spawn bisect containers
-      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       postgres:
         condition: service_healthy
-      runner-build:
-        condition: service_completed_successfully
     networks:
       - frontend
       - backend

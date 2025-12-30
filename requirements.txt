@@ -2,9 +2,6 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 
-# Docker runner for spawning isolated containers
-dockerrun @ git+https://github.com/bobrenjc93/dockerrun.git
-
 # GitHub integration
 PyGithub==2.1.1
 PyJWT==2.8.0
@@ -12,9 +9,6 @@ cryptography==41.0.7
 
 # HTTP client
 httpx==0.26.0
-
-# Docker SDK (7.1.0+ fixed urllib3 2.x compatibility by removing requests dependency)
-docker==7.1.0
 
 # Database
 sqlalchemy==2.0.25

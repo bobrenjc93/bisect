@@ -51,38 +51,21 @@ def log_startup_diagnostics():
     logger.info("=" * 60)
     
     # Configuration summary
-    logger.info(f"  Docker runner image: {settings.docker_runner_image}")
     logger.info(f"  Max concurrent jobs: {settings.max_concurrent_jobs}")
     timeout_str = f"{settings.bisect_timeout_seconds}s" if settings.bisect_timeout_seconds else "disabled"
     logger.info(f"  Bisect timeout: {timeout_str}")
     logger.info(f"  Database URL: {settings.database_url.split('@')[0]}@***")  # Hide credentials
     
-    # Check Docker availability
+    # Check git availability
     try:
         from app.bisect_runner import BisectRunner
         runner = BisectRunner()
-        if runner.check_docker_available():
-            logger.info("  ✅ Docker: Available and running")
+        if runner.check_docker_available():  # Note: this now checks git, not Docker
+            logger.info("  ✅ Git: Available")
         else:
-            logger.warning("  ⚠️  Docker: NOT AVAILABLE - jobs will fail!")
-            logger.warning("     → Ensure Docker daemon is running")
-            logger.warning("     → Check /var/run/docker.sock is mounted")
+            logger.warning("  ⚠️  Git: NOT AVAILABLE - jobs will fail!")
     except Exception as e:
-        logger.error(f"  ❌ Docker check failed: {e}")
-    
-    # Check if runner image exists
-    try:
-        import docker
-        client = docker.from_env()
-        try:
-            client.images.get(settings.docker_runner_image)
-            logger.info(f"  ✅ Runner image '{settings.docker_runner_image}' found")
-        except docker.errors.ImageNotFound:
-            logger.warning(f"  ⚠️  Runner image '{settings.docker_runner_image}' NOT FOUND")
-            logger.warning("     → The runner-build service should build this image")
-            logger.warning("     → Run: docker compose up runner-build")
-    except Exception as e:
-        logger.warning(f"  ⚠️  Could not check runner image: {e}")
+        logger.error(f"  ❌ Git check failed: {e}")
     
     logger.info("=" * 60)
 
@@ -246,15 +229,10 @@ def run_bisect_job_sync(
                 logger.error("    • The good_sha and bad_sha might be the same")
                 logger.error("    • Or good_sha is not an ancestor of bad_sha")
                 logger.error("    • Verify commit order: good should come before bad")
-            elif "image" in error_lower and "not found" in error_lower:
-                logger.error("  → Docker image not found:")
-                logger.error(f"    • Image requested: {job_data.docker_image or settings.docker_runner_image}")
-                logger.error("    • Run: docker compose up runner-build")
-                logger.error("    • Or specify a valid docker_image in your request")
-            elif "docker" in error_lower:
-                logger.error("  → Docker error:")
-                logger.error("    • Check if Docker daemon is running")
-                logger.error("    • Verify docker.sock is mounted correctly")
+            elif "clone" in error_lower or "git" in error_lower:
+                logger.error("  → Git/clone error:")
+                logger.error("    • Check if the repository URL is accessible")
+                logger.error("    • Verify GitHub App permissions")
             else:
                 logger.error("  → General failure:")
                 logger.error("    • Check the output_log for detailed error messages")
@@ -287,33 +265,22 @@ def run_bisect_job_sync(
         logger.error("📋 TROUBLESHOOTING SUGGESTIONS:")
         
         error_lower = error_msg.lower()
-        if "docker" in error_lower or "container" in error_lower:
-            logger.error("  → Docker-related error detected:")
-            logger.error("    • Check if Docker daemon is running: docker ps")
-            logger.error("    • Verify docker.sock is mounted in docker-compose.yml")
-            logger.error("    • Check Docker permissions for the bot user")
-        elif "image" in error_lower and "not found" in error_lower:
-            logger.error("  → Docker image not found:")
-            logger.error(f"    • Ensure '{settings.docker_runner_image}' image exists")
-            logger.error("    • Run: docker compose up runner-build")
-            logger.error("    • Or use a custom docker_image in your bisect request")
-        elif "clone" in error_lower or "git" in error_lower:
+        if "clone" in error_lower or "git" in error_lower:
             logger.error("  → Git/Repository error detected:")
             logger.error("    • Verify the repository URL is correct and accessible")
             logger.error("    • Check GitHub App installation permissions")
             logger.error("    • Ensure good_sha and bad_sha are valid commit hashes")
         elif "timeout" in error_lower:
             logger.error("  → Timeout error detected:")
-            logger.error("    • Timeouts are disabled, this may be a Docker daemon issue")
-            logger.error("    • Check Docker daemon connectivity and health")
+            logger.error("    • Check if the repository is too large")
             logger.error("    • Verify network is stable for large repository clones")
         elif "permission" in error_lower or "denied" in error_lower:
             logger.error("  → Permission error detected:")
-            logger.error("    • Check file permissions on mounted volumes")
+            logger.error("    • Check file permissions")
             logger.error("    • Verify GitHub App has correct repository access")
         else:
             logger.error("  → General troubleshooting:")
-            logger.error("    • Check the container logs for more details")
+            logger.error("    • Check the application logs for more details")
             logger.error("    • Verify your test_command runs correctly")
             logger.error("    • Try running the test locally first")
         
@@ -740,10 +707,10 @@ async def health(request: Request):
             headers={"Retry-After": str(job_query_limiter.get_retry_after(f"health:{client_ip}"))}
         )
     
-    docker_available = bisect_runner.check_docker_available()
+    git_available = bisect_runner.check_docker_available()  # checks git availability
     return {
-        "status": "healthy" if docker_available else "degraded",
-        "docker_available": docker_available,
+        "status": "healthy" if git_available else "degraded",
+        "git_available": git_available,
         "worker_id": WORKER_ID,
         "running_jobs": len(running_jobs),
         "max_concurrent_jobs": settings.max_concurrent_jobs,

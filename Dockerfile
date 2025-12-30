@@ -1,5 +1,5 @@
 # Dockerfile for the GitHub Bisect Bot server
-# This image runs the FastAPI server and worker processes
+# This image runs the FastAPI server and executes bisect operations directly
 
 FROM python:3.12-slim-bookworm AS base
 
@@ -13,10 +13,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system dependencies (minimal set for security)
+# Install system dependencies including build tools for bisect operations
+# These are needed because we run bisect directly in this container
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
+    curl \
     ca-certificates \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Install Node.js (common for JavaScript projects)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -33,8 +42,6 @@ COPY alembic/ ./alembic/
 COPY alembic.ini ./
 COPY tests/ ./tests/
 COPY pyproject.toml ./
-# Copy docker folder (contains Dockerfile.runner for building runner images)
-COPY docker/ ./docker/
 
 # SECURITY: Create a non-root user with specific UID/GID
 RUN groupadd -r -g 1000 botuser && \
@@ -43,6 +50,9 @@ RUN groupadd -r -g 1000 botuser && \
 
 # SECURITY: Create secrets directory with proper permissions
 RUN mkdir -p /app/secrets && chown botuser:botuser /app/secrets
+
+# Create workspace directory for bisect operations (writable by botuser)
+RUN mkdir -p /tmp/bisect-workspace && chown botuser:botuser /tmp/bisect-workspace
 
 # SECURITY: Switch to non-root user
 USER botuser:botuser

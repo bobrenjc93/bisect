@@ -32,11 +32,7 @@ class Settings(BaseSettings):
     # PostgreSQL database URL
     database_url: str = "postgresql://bisect:changeme@postgres:5432/bisect"
 
-    docker_runner_image: str = "bisect-runner:latest"
     bisect_timeout_seconds: Optional[int] = None  # No timeout - bisect can take as long as needed
-    docker_client_timeout: Optional[int] = None  # No socket-level timeout for Docker operations
-    docker_stream_timeout: Optional[int] = None  # No timeout for log stream reads
-    docker_stream_retries: int = 5  # Number of retries for transient streaming errors
     max_concurrent_jobs: int = 4
 
     host: str = "0.0.0.0"
