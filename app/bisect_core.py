@@ -55,7 +55,14 @@ def run_bisect(
     bad_sha: str,
     test_command: str,
 ) -> BisectResult:
-    """Run git bisect with the given parameters."""
+    """Run git bisect with the given parameters.
+    
+    Creates a build_and_test.sh script with the user's test command and uses
+    git bisect run to find the first bad commit. This approach:
+    1. Leverages git's built-in bisect logic for reliability
+    2. Gets caching benefits from the shell script
+    3. Simplifies the overall flow
+    """
     result = BisectResult(success=False, output="", error=None)
 
     code, stdout, stderr = run_command(
@@ -66,16 +73,21 @@ def run_bisect(
         result.error = f"Failed to start bisect: {stderr}"
         return result
 
-    test_script_path = os.path.join(repo_dir, ".bisect_test.sh")
+    # Write the user's build and test command into build_and_test.sh
+    test_script_path = os.path.join(repo_dir, "build_and_test.sh")
     with open(test_script_path, "w") as f:
         f.write(f"""#!/bin/bash
+# Auto-generated build and test script for git bisect
+# Exit code 0 = good commit (test passes)
+# Exit code 1-124, 126-127 = bad commit (test fails)
+# Exit code 125 = skip this commit (untestable)
 set -e
 {test_command}
 """)
     os.chmod(test_script_path, 0o755)
 
     code, stdout, stderr = run_command(
-        ["git", "bisect", "run", test_script_path],
+        ["git", "bisect", "run", "./build_and_test.sh"],
         cwd=repo_dir
     )
     
@@ -104,6 +116,7 @@ set -e
 
     run_command(["git", "bisect", "reset"], cwd=repo_dir)
 
+    # Clean up the script after bisect completes
     if os.path.exists(test_script_path):
         os.remove(test_script_path)
 

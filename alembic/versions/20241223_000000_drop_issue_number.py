@@ -25,3 +25,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.add_column('bisect_jobs', sa.Column('issue_number', sa.Integer(), nullable=True, server_default='0'))
 
+

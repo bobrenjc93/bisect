@@ -1,4 +1,10 @@
-"""End-to-end tests for git bisect functionality."""
+"""End-to-end tests for git bisect functionality.
+
+These tests create local git repositories with controlled commit histories
+and verify that the bisect logic correctly identifies culprit commits.
+
+Run with: uv run pytest tests/test_bisect_e2e.py -v
+"""
 
 import pytest
 from pathlib import Path
@@ -6,6 +12,159 @@ from pathlib import Path
 from app.bisect_core import BisectJob, BisectResult, run_bisect
 from app.local_runner import LocalBisectRunner
 from tests.conftest import GitTestRepo, GitRepoBuilder
+
+
+class TestStandaloneBisectE2E:
+    """
+    Standalone e2e test demonstrating the full bisect workflow.
+    
+    This test creates everything from scratch without any external dependencies:
+    1. Creates a fresh git repository
+    2. Adds a test script that initially passes
+    3. Adds several good commits
+    4. Introduces a commit that breaks the test
+    5. Adds more commits after the break
+    6. Runs bisect and verifies it finds the exact breaking commit
+    """
+
+    def test_bisect_finds_breaking_commit(self, tmp_path: Path):
+        """
+        Complete e2e test: create repo, add commits, break test, bisect to find culprit.
+        
+        Timeline:
+            Commit 0: Initial - test passes (checks for 'PASS' in status.txt)
+            Commit 1: Good - add feature A
+            Commit 2: Good - add feature B  
+            Commit 3: BAD - breaks test by changing status.txt to 'FAIL'
+            Commit 4: Bad - add feature C (still broken)
+            Commit 5: Bad - add feature D (still broken)
+        
+        Expected: Bisect should identify Commit 3 as the first bad commit.
+        """
+        from tests.conftest import GitRepoBuilder
+        
+        builder = GitRepoBuilder(tmp_path)
+        builder.init()
+        
+        # Commit 0: Initial setup with passing test
+        # The test checks if status.txt contains "PASS"
+        builder.write_file("test.sh", """#!/bin/bash
+# Simple test: exit 0 if status.txt contains PASS, exit 1 otherwise
+grep -q "PASS" status.txt
+""")
+        builder.write_file("status.txt", "PASS")
+        builder.commit("Initial commit - test passes")
+        
+        # Commit 1: Add feature A (test still passes)
+        builder.write_file("feature_a.py", "# Feature A implementation")
+        builder.commit("Add feature A")
+        
+        # Commit 2: Add feature B (test still passes)
+        builder.write_file("feature_b.py", "# Feature B implementation")
+        builder.commit("Add feature B")
+        
+        # Commit 3: BREAKING CHANGE - this is the culprit!
+        builder.write_file("status.txt", "FAIL")  # This breaks the test
+        builder.commit("Update status - BREAKS TEST")
+        
+        # Commit 4: Add feature C (test is now broken)
+        builder.write_file("feature_c.py", "# Feature C implementation")
+        builder.commit("Add feature C")
+        
+        # Commit 5: Add feature D (test is still broken)
+        builder.write_file("feature_d.py", "# Feature D implementation")
+        builder.commit("Add feature D")
+        
+        repo = builder.build()
+        
+        # We have 6 commits (0-5)
+        # Good: commits 0, 1, 2
+        # Bad: commits 3, 4, 5
+        good_sha = repo.get_commit_sha(2)  # Last known good
+        bad_sha = repo.get_commit_sha(5)   # Current broken state
+        expected_culprit = repo.get_commit_sha(3)  # The breaking commit
+        
+        # Run bisect
+        result = run_bisect(
+            repo_dir=str(repo.path),
+            good_sha=good_sha,
+            bad_sha=bad_sha,
+            test_command="bash test.sh",
+        )
+        
+        # Verify results
+        assert result.success is True, f"Bisect failed: {result.error}"
+        assert result.culprit_sha == expected_culprit, (
+            f"Expected culprit {expected_culprit}, got {result.culprit_sha}"
+        )
+        assert result.culprit_message is not None
+        assert "BREAKS TEST" in result.culprit_message
+        print(f"\n✓ Bisect correctly found culprit commit: {result.culprit_sha[:8]}")
+        print(f"  Message: {result.culprit_message}")
+
+    def test_bisect_with_python_test_script(self, tmp_path: Path):
+        """
+        E2E test using a Python test script instead of bash.
+        
+        This simulates a more realistic scenario where the test command
+        runs Python tests.
+        """
+        from tests.conftest import GitRepoBuilder
+        
+        builder = GitRepoBuilder(tmp_path)
+        builder.init()
+        
+        # Commit 0: Initial setup with passing Python test
+        builder.write_file("config.py", "ENABLED = True")
+        builder.write_file("test_config.py", """#!/usr/bin/env python3
+import sys
+from config import ENABLED
+
+def test_enabled():
+    assert ENABLED is True, "ENABLED must be True"
+
+if __name__ == "__main__":
+    try:
+        test_enabled()
+        print("Test passed!")
+        sys.exit(0)
+    except AssertionError as e:
+        print(f"Test failed: {e}")
+        sys.exit(1)
+""")
+        builder.commit("Initial config with ENABLED=True")
+        
+        # Commit 1: Add utils (still passes)
+        builder.write_file("utils.py", "# Utility functions")
+        builder.commit("Add utils module")
+        
+        # Commit 2: BREAKING - disable the feature
+        builder.write_file("config.py", "ENABLED = False")
+        builder.commit("Disable feature - BREAKS TEST")
+        
+        # Commit 3: Add more code (still broken)
+        builder.write_file("helpers.py", "# Helper functions")
+        builder.commit("Add helpers module")
+        
+        repo = builder.build()
+        
+        # Good: commits 0, 1
+        # Bad: commits 2, 3
+        good_sha = repo.get_commit_sha(1)
+        bad_sha = repo.get_commit_sha(3)
+        expected_culprit = repo.get_commit_sha(2)
+        
+        result = run_bisect(
+            repo_dir=str(repo.path),
+            good_sha=good_sha,
+            bad_sha=bad_sha,
+            test_command="python3 test_config.py",
+        )
+        
+        assert result.success is True, f"Bisect failed: {result.error}"
+        assert result.culprit_sha == expected_culprit
+        print(f"\n✓ Bisect correctly found Python test culprit: {result.culprit_sha[:8]}")
+        print(f"  Message: {result.culprit_message}")
 
 
 class TestBisectCore:

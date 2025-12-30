@@ -2,11 +2,10 @@
 
 import logging
 import uuid
-from typing import Optional, Callable, List
+from typing import Optional, Callable
 
 from dockerrun import (
     DockerRunner,
-    ContainerResult,
     DockerRunError,
     ContainerError,
     ImageNotFoundError,
@@ -52,24 +51,21 @@ fi
 '''
 
 
-def _generate_test_script(
-    commit_sha: str,
-    test_command: str,
-) -> str:
-    """Generate a shell script that checkouts and runs the test (repo already cloned)."""
+def _generate_build_and_test_script(test_command: str) -> str:
+    """Generate the build_and_test.sh script for git bisect run.
+    
+    This script is executed by git bisect run for each commit.
+    Exit codes:
+    - 0 = good commit (test passes)
+    - 1-124, 126-127 = bad commit (test fails)
+    - 125 = skip this commit (untestable)
+    """
     return f'''#!/bin/bash
+# Auto-generated build and test script for git bisect
+# Exit code 0 = good commit (test passes)
+# Exit code 1-124, 126-127 = bad commit (test fails)
+# Exit code 125 = skip this commit (untestable)
 set -e
-
-# Configure git
-git config --global --add safe.directory /workspace/repo
-
-cd /workspace/repo
-
-echo "=== Checking out commit {commit_sha[:7]} ==="
-git checkout --quiet --force {commit_sha}
-git clean -fdx --quiet
-
-echo "=== Running test command ==="
 {test_command}
 '''
 
@@ -104,7 +100,12 @@ class BisectRunner:
         log_callback: Optional[LogCallback] = None,
     ) -> BisectResult:
         """
-        Run a bisect job by spawning containers for each commit test.
+        Run a bisect job using git bisect run with build_and_test.sh.
+
+        This approach:
+        1. Clones the repository and writes build_and_test.sh with the user's test command
+        2. Uses git bisect run ./build_and_test.sh to find the first bad commit
+        3. Leverages git's built-in bisect logic for reliability and caching benefits
 
         Args:
             job: The bisect job configuration
@@ -131,28 +132,22 @@ class BisectRunner:
             self.docker_runner.client.volumes.create(name=volume_name)
             logger.info(f"Created volume: {volume_name}")
 
-            # Clone the repository once into the volume
+            # Clone the repository and write build_and_test.sh
             if log_callback:
-                log_callback(f"📋 Cloning repository and fetching commit list...")
+                log_callback(f"📋 Cloning repository...")
 
-            commits = self._clone_and_get_commits(job, image_name, volume_name, log_callback)
-            if commits is None:
+            clone_success = self._clone_and_setup_bisect_script(job, image_name, volume_name, log_callback)
+            if not clone_success:
                 return BisectResult(
                     success=False,
-                    error="Failed to clone repository or get commit list",
-                )
-
-            if len(commits) == 0:
-                return BisectResult(
-                    success=False,
-                    error="No commits found between good and bad commits",
+                    error="Failed to clone repository or setup build_and_test.sh",
                 )
 
             if log_callback:
-                log_callback(f"📊 Found {len(commits)} commits to bisect")
+                log_callback(f"📝 Created build_and_test.sh with test command")
 
-            # Run binary search bisect using the same volume
-            return self._run_bisect_search(job, image_name, volume_name, commits, log_callback)
+            # Run git bisect run with build_and_test.sh
+            return self._run_git_bisect(job, image_name, volume_name, log_callback)
 
         except ImageNotFoundError as e:
             error_msg = str(e)
@@ -242,14 +237,17 @@ class BisectRunner:
         except Exception as e:
             logger.warning(f"Failed to clean up volume {volume_name}: {e}")
 
-    def _clone_and_get_commits(
+    def _clone_and_setup_bisect_script(
         self,
         job: BisectJob,
         image_name: str,
         volume_name: str,
         log_callback: Optional[LogCallback] = None,
-    ) -> Optional[List[str]]:
-        """Clone the repository into the volume and get the list of commits."""
+    ) -> bool:
+        """Clone the repository and create build_and_test.sh script."""
+        # Generate the build_and_test.sh content
+        build_test_script = _generate_build_and_test_script(job.test_command)
+        
         script = f'''#!/bin/bash
 set -e
 
@@ -263,24 +261,20 @@ echo "Cloning repository..."
 git clone --progress "{job.repo_url}" /workspace/repo 2>&1
 cd /workspace/repo
 
-echo "Fetching commit list..."
-# Get commits from good (exclusive) to bad (inclusive), oldest first
-git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
+echo "Creating build_and_test.sh..."
+cat > build_and_test.sh << 'BISECT_SCRIPT_EOF'
+{build_test_script}BISECT_SCRIPT_EOF
+chmod +x build_and_test.sh
+
+echo "build_and_test.sh created successfully"
 '''
         try:
             # Use streaming to show clone progress
-            collected_output = []
-
             def on_output(chunk):
                 text = chunk.decode().rstrip()
-                if text:
-                    collected_output.append(text)
-                    if log_callback:
-                        for line in text.split('\n'):
-                            # Don't stream the commit SHAs themselves
-                            if len(line) == 40 and all(c in '0123456789abcdef' for c in line):
-                                continue
-                            log_callback(f"   │ {line}")
+                if text and log_callback:
+                    for line in text.split('\n'):
+                        log_callback(f"   │ {line}")
 
             result = self.docker_runner.run_with_callback(
                 image_name,
@@ -293,38 +287,21 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
 
             if not result.success:
                 stderr = result.stderr_text or "Unknown error"
-                logger.error(f"Failed to clone repository or get commit list: {stderr}")
+                logger.error(f"Failed to clone repository: {stderr}")
                 logger.error("-" * 50)
                 logger.error("📋 POSSIBLE CAUSES:")
-                if "not found" in stderr.lower() or "unknown revision" in stderr.lower():
-                    logger.error("  → One or both commit SHAs don't exist in the repository")
-                    logger.error(f"    • good_sha: {job.good_sha}")
-                    logger.error(f"    • bad_sha: {job.bad_sha}")
-                    logger.error("  → Verify commits exist: git rev-parse <sha>")
-                elif "authentication" in stderr.lower() or "permission" in stderr.lower():
+                if "authentication" in stderr.lower() or "permission" in stderr.lower():
                     logger.error("  → Repository access denied")
                     logger.error("    • Check GitHub App installation permissions")
                     logger.error("    • Ensure the App has access to the repository")
-                elif "not an ancestor" in stderr.lower():
-                    logger.error("  → good_sha is not an ancestor of bad_sha")
-                    logger.error("    • The 'good' commit must come before 'bad' in history")
                 else:
                     logger.error(f"  → Git error: {stderr}")
                 logger.error("-" * 50)
                 if log_callback:
-                    log_callback(f"❌ Failed to clone or get commit list: {stderr}")
-                    log_callback("💡 Verify both commit SHAs exist and good_sha comes before bad_sha")
-                return None
+                    log_callback(f"❌ Failed to clone repository: {stderr}")
+                return False
 
-            # Filter to only include valid 40-character hex strings (git SHAs)
-            # This filters out log messages like "Cloning repository..." that may be in stdout
-            commits = [
-                line.strip()
-                for line in result.stdout_text.strip().split("\n")
-                if line.strip() and len(line.strip()) == 40 and all(c in '0123456789abcdef' for c in line.strip())
-            ]
-
-            return commits
+            return True
 
         except Exception as e:
             error_type = type(e).__name__
@@ -339,21 +316,20 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
             logger.error("-" * 50)
             if log_callback:
                 log_callback(f"❌ Failed to clone repository ({error_type}): {e}")
-            return None
+            return False
 
-    def _run_bisect_search(
+    def _run_git_bisect(
         self,
         job: BisectJob,
         image_name: str,
         volume_name: str,
-        commits: List[str],
         log_callback: Optional[LogCallback] = None,
     ) -> BisectResult:
-        """Run binary search to find the first bad commit."""
-        # commits is ordered from good side to bad side
-        # commits[0] is the first commit after good
-        # commits[-1] is the bad commit
-
+        """Run git bisect using git bisect run with build_and_test.sh.
+        
+        This leverages git's built-in bisect logic for reliability and gets
+        caching benefits from the shell script approach.
+        """
         output_lines = []
 
         def log(msg: str):
@@ -362,69 +338,31 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
                 log_callback(msg)
 
         log(f"")
-        log(f"▶️ Starting binary search over {len(commits)} commits...")
+        log(f"▶️ Starting git bisect run with build_and_test.sh...")
 
-        # Binary search: find the first bad commit
-        # We know: good_sha is good, bad_sha is bad
-        # commits are ordered from first-after-good to bad
+        # Script that runs git bisect start and git bisect run
+        # Need to install git again since this is a fresh container (git was only installed
+        # in the clone container, which is ephemeral - only the /workspace volume persists)
+        script = f'''#!/bin/bash
+set -e
 
-        left = 0  # First possible bad commit index
-        right = len(commits) - 1  # Last possible bad commit index
+{GIT_INSTALL_SCRIPT}
 
-        step = 0
-        while left < right:
-            step += 1
-            mid = (left + right) // 2
-            commit = commits[mid]
+git config --global --add safe.directory /workspace/repo
+cd /workspace/repo
 
-            remaining = right - left + 1
-            log(f"")
-            log(f"🔍 Step {step}: Testing commit {commit[:7]} ({remaining} commits remaining)")
+echo "=== Starting git bisect ==="
+git bisect start {job.bad_sha} {job.good_sha}
 
-            is_bad = self._test_commit(job, image_name, volume_name, commit, log_callback)
+echo "=== Running git bisect with build_and_test.sh ==="
+# Run bisect - git bisect run will execute build_and_test.sh for each commit
+# and use exit codes to determine good/bad
+git bisect run ./build_and_test.sh
 
-            if is_bad:
-                log(f"   ❌ Commit {commit[:7]} is BAD")
-                right = mid  # The first bad commit is at mid or before
-            else:
-                log(f"   ✅ Commit {commit[:7]} is GOOD")
-                left = mid + 1  # The first bad commit is after mid
-
-        # left == right, this is the first bad commit
-        culprit_sha = commits[left]
-        log(f"")
-        log(f"🎯 Found first bad commit: {culprit_sha[:7]}")
-
-        # Get the commit message (repo is already cloned in the volume)
-        culprit_message = self._get_commit_message(job, image_name, volume_name, culprit_sha)
-
-        log(f"")
-        log(f"=== BISECT RESULT ===")
-        log(f"SUCCESS: Found culprit commit")
-        log(f"SHA: {culprit_sha}")
-        log(f"MESSAGE: {culprit_message}")
-        log(f"=== END RESULT ===")
-
-        return BisectResult(
-            success=True,
-            culprit_sha=culprit_sha,
-            culprit_message=culprit_message,
-            output="\n".join(output_lines),
-        )
-
-    def _test_commit(
-        self,
-        job: BisectJob,
-        image_name: str,
-        volume_name: str,
-        commit_sha: str,
-        log_callback: Optional[LogCallback] = None,
-    ) -> bool:
-        """Test a single commit. Returns True if the commit is bad (test fails)."""
-        script = _generate_test_script(commit_sha, job.test_command)
-
+echo "=== Bisect complete ==="
+git bisect log
+'''
         try:
-            # Use run_with_callback for streaming output
             collected_output = []
 
             def on_output(chunk):
@@ -432,7 +370,6 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
                 if text:
                     collected_output.append(text)
                     if log_callback:
-                        # Indent container output
                         for line in text.split('\n'):
                             log_callback(f"   │ {line}")
 
@@ -445,36 +382,71 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
                 volumes={volume_name: {"bind": "/workspace", "mode": "rw"}},
             )
 
-            # Test passes (exit 0) = commit is good
-            # Test fails (exit != 0) = commit is bad
-            return not result.success
+            full_output = result.stdout_text + (result.stderr_text or "")
+            
+            # Parse the output to find the culprit commit
+            culprit_sha = None
+            for line in full_output.split("\n"):
+                if "is the first bad commit" in line:
+                    parts = line.split()
+                    if parts:
+                        culprit_sha = parts[0]
+                        break
+
+            if culprit_sha:
+                # Get the commit message
+                culprit_message = self._get_commit_message(job, image_name, volume_name, culprit_sha)
+
+                log(f"")
+                log(f"🎯 Found first bad commit: {culprit_sha[:7]}")
+                log(f"")
+                log(f"=== BISECT RESULT ===")
+                log(f"SUCCESS: Found culprit commit")
+                log(f"SHA: {culprit_sha}")
+                log(f"MESSAGE: {culprit_message}")
+                log(f"=== END RESULT ===")
+
+                return BisectResult(
+                    success=True,
+                    culprit_sha=culprit_sha,
+                    culprit_message=culprit_message,
+                    output="\n".join(output_lines),
+                )
+            else:
+                # Bisect didn't find a culprit
+                error_msg = "Bisect did not find a culprit commit"
+                if not result.success:
+                    error_msg = f"Bisect failed: {result.stderr_text or 'Unknown error'}"
+                
+                log(f"")
+                log(f"❌ {error_msg}")
+
+                return BisectResult(
+                    success=False,
+                    error=error_msg,
+                    output="\n".join(output_lines),
+                )
 
         except ContainerError as e:
-            # Container error typically means the test failed
-            logger.debug(f"Container error testing {commit_sha[:7]}: {e}")
+            logger.error(f"Container error during bisect: {e}")
             if log_callback:
-                log_callback(f"   │ Container exited with error (test likely failed)")
-            return True
+                log_callback(f"❌ Container error during bisect: {e}")
+            return BisectResult(
+                success=False,
+                error=f"Container error: {e}",
+                output="\n".join(output_lines),
+            )
 
         except Exception as e:
-            # On unexpected errors, assume the commit is bad to be safe
             error_type = type(e).__name__
-            logger.warning(f"Error testing commit {commit_sha[:7]} ({error_type}): {e}")
-            
-            # Log more details for debugging
-            error_msg = str(e).lower()
-            if "timeout" in error_msg:
-                logger.warning(f"  → Test timed out for commit {commit_sha[:7]}")
-                logger.warning("    • This is unexpected since timeouts are disabled")
-                logger.warning("    • Check Docker daemon or network connectivity")
-            elif "memory" in error_msg or "oom" in error_msg:
-                logger.warning(f"  → Possible memory issue for commit {commit_sha[:7]}")
-                logger.warning("    • Check Docker container memory limits")
-            
+            logger.error(f"Exception during bisect ({error_type}): {e}")
             if log_callback:
-                log_callback(f"   ⚠️ Error testing commit ({error_type}): {e}")
-                log_callback("   │ Marking commit as BAD to continue bisect")
-            return True
+                log_callback(f"❌ Error during bisect ({error_type}): {e}")
+            return BisectResult(
+                success=False,
+                error=f"Unexpected error ({error_type}): {e}",
+                output="\n".join(output_lines),
+            )
 
     def _get_commit_message(
         self,
@@ -484,8 +456,11 @@ git rev-list --ancestry-path {job.good_sha}..{job.bad_sha} | tac
         commit_sha: str,
     ) -> Optional[str]:
         """Get the commit message for a given SHA (repo already cloned in volume)."""
+        # Need to install git again since this is a fresh container
         script = f'''#!/bin/bash
 set -e
+
+{GIT_INSTALL_SCRIPT}
 
 git config --global --add safe.directory /workspace/repo
 cd /workspace/repo
